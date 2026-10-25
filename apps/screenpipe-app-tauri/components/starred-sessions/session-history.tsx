@@ -1,5 +1,7 @@
 // screenpipe — AI that knows everything you've seen, said, or heard
 // https://screenpipe.com
+import { useGT } from "gt-react";
+import { useUiLocale } from "@/lib/i18n/provider";
 import { useEffect, useRef, useState } from "react";
 import { Star } from "lucide-react";
 import { emit } from "@tauri-apps/api/event";
@@ -12,6 +14,10 @@ import {
 import type { StarredSession } from "./use-starred-sessions";
 
 export function SessionHistory() {
+  const ui = useGT();
+  const uiLocale = useUiLocale();
+  const number = (value: number) => value.toLocaleString(uiLocale);
+  const errorText = (message: string) => message === "Could not load sessions." ? ui("Could not load sessions.") : message;
   const [open, setOpen] = useState(false);
   const [day, setDay] = useState("");
   const [rows, setRows] = useState<StarredSession[]>([]);
@@ -88,7 +94,7 @@ export function SessionHistory() {
             Date{" "}
             <input
               type="date"
-              aria-label="Filter sessions by date"
+              aria-label={ui("Filter sessions by date")}
               value={day}
               onChange={(e) => setDay(e.target.value)}
               className="min-w-0 flex-1 rounded border bg-background p-1.5"
@@ -110,7 +116,7 @@ export function SessionHistory() {
                 new Date(rows[index - 1].start).toDateString() !==
                   new Date(session.start).toDateString()) && (
                 <p className="px-2 pb-1 pt-2 text-[10px] text-muted-foreground">
-                  {new Date(session.start).toLocaleDateString(undefined, {
+                  {new Date(session.start).toLocaleDateString(uiLocale, {
                     month: "short",
                     day: "numeric",
                     year: "numeric",
@@ -126,19 +132,19 @@ export function SessionHistory() {
               >
                 <Star className="h-3 w-3 fill-current" />
                 <span>
-                  {new Date(session.start).toLocaleTimeString(undefined, {
+                  {new Date(session.start).toLocaleTimeString(uiLocale, {
                     hour: "2-digit",
                     minute: "2-digit",
                   })}
                   <span className="block pt-1 text-[10px] text-muted-foreground">
-                    {Math.max(
+                    {ui("{count} min", { count: number(Math.max(
                       1,
                       Math.round(
                         (Date.parse(session.end) - Date.parse(session.start)) /
                           60000,
                       ),
-                    )}{" "}
-                    min{session.has_audio ? " · Audio" : ""}
+                    )) })}{" "}
+                    {session.has_audio ? ui(" · Audio") : ""}
                   </span>
                 </span>
               </button>
@@ -146,12 +152,12 @@ export function SessionHistory() {
           ))}
           {!rows.length && !busy && !error && (
             <p className="p-4 text-xs text-muted-foreground">
-              No starred sessions{day ? " on this date" : " yet"}.
+              {day ? ui("No starred sessions on this date.") : ui("No starred sessions yet.")}
             </p>
           )}
           {error && (
             <p role="alert" className="p-2 text-xs">
-              {error}{" "}
+              {errorText(error)}{" "}
               <button className="underline" onClick={() => void load(false)}>
                 Retry
               </button>

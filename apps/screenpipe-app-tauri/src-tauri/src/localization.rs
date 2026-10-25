@@ -61,6 +61,13 @@ pub fn resolve_locale(configured: &str, system: &[String], available: &[String],
     let candidates = if configured == "system" { system } else { &explicit };
     for candidate in candidates {
         let candidate = candidate.replace('_', "-");
+        let normalized = candidate.to_ascii_lowercase();
+        if (normalized == "zh" || normalized == "zh-sg" || normalized == "zh-hans" || normalized.starts_with("zh-hans-"))
+            && !available.iter().any(|locale| locale.eq_ignore_ascii_case(&candidate)) {
+            if let Some(chinese) = available.iter().find(|locale| locale.eq_ignore_ascii_case("zh-CN")) {
+                return chinese.clone();
+            }
+        }
         for value in [candidate.as_str(), candidate.split('-').next().unwrap_or_default()] {
             if let Some(found) = available.iter().find(|locale| locale.eq_ignore_ascii_case(value)) {
                 return found.clone();
@@ -85,11 +92,18 @@ fn refresh(configured: &str, rollout_enabled: bool) -> bool {
     let default = SNAPSHOT["defaultLocale"].as_str().unwrap_or("en");
     let mut available = vec![default.to_string()];
     if let Some(locales) = SNAPSHOT["locales"].as_array() {
-        available.extend(locales.iter().filter_map(Value::as_str).map(String::from));
+        available.extend(locales.iter().filter_map(Value::as_str).filter(|locale| {
+            // Match the frontend selector exactly. A configured pilot language
+            // without bundled UI messages must not change native date formats.
+            SNAPSHOT["translations"][*locale].as_object().is_some_and(|messages| !messages.is_empty())
+        }).map(String::from));
     }
     let system: Vec<String> = sys_locale::get_locales().collect();
     let mut state = STATE.write().unwrap_or_else(|e| e.into_inner());
-    state.update(configured, rollout_enabled, &system, &available, default)
+    // The personal fork's reviewed offline catalog is user-controlled. Old
+    // rollout flags must not disable a saved language on native surfaces.
+    let enabled = rollout_enabled || available.iter().any(|locale| locale == "zh-CN");
+    state.update(configured, enabled, &system, &available, default)
 }
 
 fn refresh_surfaces(app: &AppHandle) {

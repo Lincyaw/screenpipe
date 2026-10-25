@@ -2,6 +2,8 @@
 // https://screenpipe.com
 "use client";
 
+import { useGT } from "gt-react";
+import { useUiLocale } from "@/lib/i18n/provider";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -23,6 +25,8 @@ function isCapture(value: unknown): value is QuickAnnotationCapture {
 }
 
 export default function AnnotatePage() {
+  const ui = useGT();
+  const uiLocale = useUiLocale();
   const [capture, setCapture] = useState<QuickAnnotationCapture | null>(null);
   const captureRef = useRef<QuickAnnotationCapture | null>(null);
   const [loading, setLoading] = useState(true);
@@ -36,7 +40,7 @@ export default function AnnotatePage() {
 
   const acceptCapture = useCallback((value: unknown) => {
     if (!isCapture(value)) {
-      setError("The captured screenshot is unavailable. Retry or close this window.");
+      setError(ui("The captured screenshot is unavailable. Retry or close this window."));
       setLoading(false);
       return;
     }
@@ -46,7 +50,7 @@ export default function AnnotatePage() {
     setCapture(value);
     setLoading(false);
     setError(null);
-  }, []);
+  }, [uiLocale]);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,7 +68,7 @@ export default function AnnotatePage() {
             const result = await commands.getAnnotationCapture();
             if (!cancelled && result.status === "ok" && isCapture(result.data) && result.data.requestId === payload.requestId) acceptCapture(result.data);
           } catch {
-            if (!cancelled && !captureRef.current) setError("The screenshot could not be opened. Retry or close this window.");
+            if (!cancelled && !captureRef.current) setError(ui("The screenshot could not be opened. Retry or close this window."));
           }
         });
       } catch {
@@ -77,12 +81,12 @@ export default function AnnotatePage() {
         if (result.status === "ok" && result.data) acceptCapture(result.data);
         else if (!captureRef.current) {
           setLoading(false);
-          setError("No captured screenshot is ready. Retry or close this window.");
+          setError(ui("No captured screenshot is ready. Retry or close this window."));
         }
       } catch {
         if (!cancelled && !captureRef.current) {
           setLoading(false);
-          setError("The screenshot could not be opened. Retry or close this window.");
+          setError(ui("The screenshot could not be opened. Retry or close this window."));
         }
       }
     })();
@@ -102,10 +106,10 @@ export default function AnnotatePage() {
       } else await getCurrentWindow().close();
     } catch {
       closeInFlightRef.current = false;
-      setError("This window could not be closed. Please try again.");
+      setError(ui("This window could not be closed. Please try again."));
       setClosing(false);
     }
-  }, []);
+  }, [uiLocale]);
 
   useEffect(() => {
     let cancelled = false;
@@ -147,13 +151,13 @@ export default function AnnotatePage() {
 
   return <main className="flex h-screen w-screen items-center justify-center bg-background p-6 text-foreground">
     <div className="max-w-md space-y-4 text-center">
-      <h1 className="text-lg font-medium">{saved ? "Annotation saved" : "Capture and annotate"}</h1>
-      {saved && <p className="text-sm text-muted-foreground">Saved locally{saved.retained_image ? ", with its source image" : ""}.</p>}
+      <h1 className="text-lg font-medium">{saved ? ui("Annotation saved") : ui("Capture and annotate")}</h1>
+      {saved && <p className="text-sm text-muted-foreground">{saved.retained_image ? ui("Saved locally, with its source image.") : ui("Saved locally.")}</p>}
       {loading && !saved && <p role="status" className="text-sm text-muted-foreground">Opening the captured screenshot…</p>}
       {error && <p role="alert" className="text-sm text-muted-foreground">{error}</p>}
       <div className="flex justify-center gap-2">
         {error && !saved && <Button variant="secondary" disabled={closing} onClick={() => setReload((value) => value + 1)}>Retry</Button>}
-        <Button disabled={closing} onClick={() => void closeCapture()}>{closing ? "Closing…" : "Close"}</Button>
+        <Button disabled={closing} onClick={() => void closeCapture()}>{closing ? ui("Closing…") : ui("Close")}</Button>
       </div>
     </div>
   </main>;

@@ -8,6 +8,7 @@ export function resolveLocale(configured: string, system: readonly string[], ava
     const normalized = candidate.replaceAll("_", "-").toLowerCase();
     const exact = supported.get(normalized);
     if (exact) return exact;
+    if ((normalized === "zh" || normalized === "zh-sg" || /^zh-hans(?:-|$)/.test(normalized)) && supported.has("zh-cn")) return supported.get("zh-cn")!;
     const base = supported.get(normalized.split("-")[0]);
     if (base) return base;
   }

@@ -24,7 +24,7 @@ export type OnboardingGoalSuggestion = {
 export const ONBOARDING_GOALS: OnboardingGoalSuggestion[] = [
   {
     category: "work_memory",
-    title: msg("Ask about my work"),
+    title: msg("Ask about my work", {}),
     description: "Find anything I saw, heard, or did",
     prompt:
       "Build a personal work memory dashboard that helps me resume what I was doing, recover loose ends, and find the source-backed context behind recent work.",
@@ -32,7 +32,7 @@ export const ONBOARDING_GOALS: OnboardingGoalSuggestion[] = [
   },
   {
     category: "meeting_follow_through",
-    title: msg("Follow through after meetings"),
+    title: msg("Follow through after meetings", {}),
     description: "Keep decisions, owners, and next steps from getting lost",
     prompt:
       "Build a meeting follow-through dashboard with recent meeting context, explicit decisions, owned action items, unresolved questions, and source-backed next steps.",
@@ -40,7 +40,7 @@ export const ONBOARDING_GOALS: OnboardingGoalSuggestion[] = [
   },
   {
     category: "work_patterns",
-    title: msg("Review my day"),
+    title: msg("Review my day", {}),
     description: "Tasks, meetings, and where my time went",
     prompt:
       "Build a daily review dashboard with source-backed tasks, meeting follow-through, and how I spent time across applications and projects.",
@@ -51,7 +51,7 @@ export const ONBOARDING_GOALS: OnboardingGoalSuggestion[] = [
   },
   {
     category: "process_automation",
-    title: msg("Automate repeated work"),
+    title: msg("Automate repeated work", {}),
     description: "Turn real steps into a workflow or SOP",
     prompt:
       "Build a process discovery dashboard from repeated captured work. Show a source-backed workflow map, concrete steps and exceptions, likely time cost, and one small human-reviewed automation opportunity.",

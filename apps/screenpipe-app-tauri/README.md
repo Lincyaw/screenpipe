@@ -149,76 +149,62 @@ The desktop retains the on-demand meeting-summary template and no longer starts 
 
 ## localization integration
 
-`gt.config.json` owns the source language and bundled languages. The initial
-pilot is Japanese (`ja`), behind the PostHog flag `desktop-localization`.
-The flag defaults off: the app stays English and hides the language selector.
-When enabled, Japanese appears as 日本語 in Settings and onboarding, and Japanese
-system locales such as `ja-JP` resolve to `ja`. English stays
-in JSX and `useGT()` calls; shared definitions use `msg()` and `useMessages()`.
-Explicit native labels use `ui_text("English")`.
-The primary window persists successful flag evaluations in `uiLocalizationEnabled`
-through the existing settings store, so every window and native surface shares
-the decision, including after restart. Loading/network failures retain the last
-decision; an explicit false or a missing flag in a successful response disables
-localization without clearing `uiLocale`. The existing PostHog refresh loop picks
-up rollout changes without restarting the app. Build-time generation is unchanged.
-Generated translations are ignored build artifacts. Never pass recorded text,
-user messages, AI output, executable prompts, or diagnostic logs to these helpers.
+Choose **Settings → General → Language** to select **简体中文**, **English** or
+**System default**. The choice is stored locally and applies to every window,
+the tray menu and native timeline. Simplified Chinese system identifiers such
+as `zh-CN`, `zh-Hans-CN` and `zh-SG` resolve to the bundled `zh-CN` locale.
+The Chinese catalog is available offline without an account or remote rollout
+flag. Languages without frontend translations are hidden from the selector.
 
-Ordinary `dev`, `dev:web`, `dev:tauri`, and `build` commands default to English
-and make no translation requests, even when GT credentials are present.
+Normal development and production frontend builds prepare cached translations
+without contacting a translation service. From this directory:
 
 ```bash
-SCREENPIPE_I18N_MODE=cached bun run dev:web    # use existing translations offline
-SCREENPIPE_I18N_MODE=generate bun run dev:web  # generate once before startup
-bun run build:production                     # finalize translations, then build
+bun run dev:web
+bun run i18n:prepare
+SCREENPIPE_I18N_MODE=off bun run dev:web
 ```
 
-`cached` and `generate` both validate message structure and placeholders.
-Missing/invalid translations fall back to English. Service unavailability emits
-warnings and coverage; extraction, compilation, and artifact failures are fatal.
-Hot reload does not contact the translation service. Runtime loads only bundled
-data and never uses GT credentials or its CDN.
+The explicit `off` mode builds English only. `generate` mode requests provider
+translations only when explicitly selected and configured with `GT_PROJECT_ID`
+and `GT_API_KEY`. Runtime code never uses those credentials or a translation CDN.
 
-Generation sends only missing source hashes in immutable batches. Unchanged
-translations are reused, and provider corrections are downloaded from their
-original batch without regenerating it. The provider's policy branch also
-recovers translations when the local/Actions cache is absent. The pinned GT
-collector supplies message formats and component/file context; every submitted
-batch includes the shared English style brief.
+### Maintain bundled translations
 
-One-time setup: create a GT project, configure its shared translation guidance
-from `translationPolicy.context` in `scripts/i18n/config.mjs`, and provide
-`GT_PROJECT_ID` and `GT_API_KEY` through the environment or Actions secrets.
-Manage terminology and corrections in GT. Change the policy revision when
-changing those shared instructions. Add languages only to `gt.config.json`.
+`gt.config.json` lists the source and target languages. English stays in JSX,
+`useGT()` and `msg()` calls. The compiler extracts only owned interface source;
+shared definitions use `msg("English", {})` and `useMessages()`. Rust display
+text uses `ui_text` / `ui_format`, and Swift display text uses `uiText`.
 
-Release jobs prepare one snapshot and coverage artifact before platform builds;
-enterprise handoff reuses the consumer run's snapshot. Manual enterprise
-recovery prepares one if no consumer run is supplied. Platform jobs require
-the snapshot to match current source and policy before consulting the frontend
-cache. Local reuse accepts `SCREENPIPE_I18N_SNAPSHOT=/absolute/path/snapshot.json`
-with `SCREENPIPE_I18N_MODE=cached`.
+The reviewed English-to-Chinese dictionaries are tracked in
+`scripts/i18n/locales/zh-CN-{core,memory,native}.mjs`. Add exact source messages
+or rich-text fragments, preserving every placeholder, technical identifier and
+shortcut. `scripts/i18n/bundled.mjs` maps these entries to extracted GT messages
+at build time. It preserves element/variable identities and translates only
+text and display attributes. An incomplete rich message falls back to English
+instead of mixing translated and untranslated fragments. Invalid structure or
+placeholders in a bundled translation fail the build.
 
-The native catalog also covers the Swift timeline, shortcut overlay and
-notification panel. Menus retain their handles when the locale changes.
-English labels use `ui_text` / `ui_format` in Rust and `uiText` in Swift;
-`source_text` and `ui_menu` retain deferred menu sources for live switching.
+Never send recorded text, notes, user input, AI output, executable prompts or
+logs through translation helpers. Dynamic UI states need explicit source
+messages; backend IDs and enums remain unchanged. Date and number presentation
+uses `useUiLocale()` or the existing locale formatters.
 
-Shared UI definitions use `msg("English", {})`: the explicit options object
-marks the value for `localizeDefinitions` without translating IDs or prompts.
-Translate only display fields when a definition is also persisted or executed.
-Memoized render data depends on `useUiLocale()` rather than GT callback identity,
-which can change on each render in development.
+Run `bun run i18n:prepare` after changing messages. Generated translations and
+`.localization/coverage.json` are ignored build artifacts. The coverage report
+lists remaining English fallbacks; its message count does not establish that
+every rendered surface has been translated. Verify the relevant UI after each
+catalog change.
 
-For a Japanese system-language browser fixture, open
-`http://127.0.0.1:1420/home?mockLocale=ja-JP&mockLocalization=true` in cached mode.
-`mockLocalization=true` explicitly seeds the rollout decision only in browser-mock
-builds; omit it to check the disabled state. `mockLocale` sets the mock OS locale.
-Settings still override it normally. The mock store
-resets on a full reload; native restart persistence requires a disposable app test.
-Current snapshot coverage and fallback causes are in `.localization/coverage.json`.
-Counts describe extracted messages; verify rendered surfaces before delivery.
+For a Chinese browser-mock fixture, open
+`http://127.0.0.1:1420/dev/context?mockLocale=zh-Hans-CN` with `bun run dev:web`
+running. Browser-mock settings reset on reload; native settings persist.
+
+Release jobs may hand off the validated immutable snapshot using
+`SCREENPIPE_I18N_SNAPSHOT=/absolute/path/snapshot.json` and
+`SCREENPIPE_I18N_MODE=cached`. A snapshot must match source, configuration,
+translation policy and the reviewed dictionaries. macOS permission explanations
+are packaged as `InfoPlist.strings` and follow the OS dialog language.
 
 ## dev builds are isolated from your installed app
 

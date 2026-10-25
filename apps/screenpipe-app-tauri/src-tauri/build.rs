@@ -604,12 +604,11 @@ fn main() {
     let generated = std::path::Path::new("../lib/i18n/generated.json");
     let fallback = std::path::Path::new("../lib/i18n/empty.json");
     println!("cargo:rerun-if-env-changed=SCREENPIPE_I18N_MODE");
-    // A cached preview must not silently enable localization in a later native
-    // development build from the same checkout. Release builds consume the
-    // snapshot prepared by their frontend build; local builds opt in explicitly.
+    // Normal builds bundle the reviewed offline catalog just like the frontend.
+    // An explicit off build still embeds only the English fallback snapshot.
     let enabled = std::env::var("SCREENPIPE_I18N_MODE")
         .map(|mode| mode != "off")
-        .unwrap_or_else(|_| std::env::var("PROFILE").as_deref() == Ok("release"));
+        .unwrap_or(true);
     println!("cargo:rerun-if-changed={}", generated.display());
     println!("cargo:rerun-if-changed={}", fallback.display());
     let localization = std::fs::read(if enabled && generated.exists() {

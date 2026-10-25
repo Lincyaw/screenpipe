@@ -2,6 +2,8 @@
 // https://screenpipe.com
 "use client";
 
+import { useUiLocale } from "@/lib/i18n/provider";
+import { useGT } from "gt-react";
 import { useEffect, useState } from "react";
 import { localFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -13,6 +15,16 @@ type Detail = { session: Session; text: string; coverage: string; max_lines: num
 
 /** Sessions are reference records, never chat destinations. */
 export function AgentSessionContext() {
+  const ui = useGT();
+  const uiLocale = useUiLocale();
+  const number = (value: number) => value.toLocaleString(uiLocale);
+  const warningText = (warning: string) => {
+    const bounded = /^(codex|claude|cursor|gemini): read the (\d+) most recent transcripts; older chats were not searched$/.exec(warning);
+    return bounded ? ui("{source}: read the {count} most recent transcripts; older chats were not searched", {
+      source: bounded[1], count: number(Number(bounded[2])),
+    }) : warning;
+  };
+  const sourceLabels: Record<string, string> = { codex: ui("Codex"), claude: ui("Claude"), cursor: ui("Cursor"), gemini: ui("Gemini"), screenpipe: ui("screenpipe") };
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<SearchResult | null>(null);
   const [selected, setSelected] = useState<Session | null>(null);
@@ -28,35 +40,35 @@ export function AgentSessionContext() {
       : new URLSearchParams({ q: query, limit: "30" });
     const timer = setTimeout(() => {
       void localFetch(`/agent-sessions?${params}`, { signal: controller.signal }).then(async response => {
-        if (!response.ok) throw new Error(`Could not read local sessions (${response.status}).`);
+        if (!response.ok) throw new Error(ui("Could not read local sessions ({status}).", { status: response.status }));
         const data = await response.json();
         if (controller.signal.aborted) return;
         if (selected) setDetail(data); else setResult(data);
-      }).catch(error => { if (!controller.signal.aborted) setError(String(error.message)); })
+      }).catch(error => { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : ui("Could not read local sessions. Please try again.")); })
         .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     }, selected ? 0 : 250);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [query, selected, revision]);
-  return <section className="h-full overflow-auto px-6 pb-8 pt-12" aria-label="Agent session records">
+  }, [query, selected, revision, uiLocale]);
+  return <section className="h-full overflow-auto px-6 pb-8 pt-12" aria-label={ui("Agent session records")}>
     <header className="mb-6 flex items-center justify-between gap-3">
       <div><h1 className="text-lg font-medium">Agent sessions</h1><p className="mt-1 text-sm text-muted-foreground">Local conversation records for context.</p></div>
       <Button variant="outline" size="sm" onClick={() => setRevision(value => value + 1)}>Refresh</Button>
     </header>
     {selected ? <Button variant="ghost" onClick={() => setSelected(null)}>Back to sessions</Button>
-      : <Input aria-label="Search agent sessions" placeholder="Search local sessions" value={query} onChange={event => setQuery(event.target.value)} />}
+      : <Input aria-label={ui("Search agent sessions")} placeholder={ui("Search local sessions")} value={query} onChange={event => setQuery(event.target.value)} />}
     {loading && <p role="status" className="mt-4 text-sm text-muted-foreground">Reading local records…</p>}
     {error && <p role="alert" className="mt-4 text-sm">{error}</p>}
-    {(result?.warnings ?? detail?.warnings ?? []).map(warning => <p key={warning} className="mt-3 text-xs text-muted-foreground">{warning}</p>)}
+    {(result?.warnings ?? detail?.warnings ?? []).map(warning => <p key={warning} className="mt-3 text-xs text-muted-foreground">{warningText(warning)}</p>)}
     {result && <div className="mt-4 divide-y divide-border">
       {result.results.map(session => <button key={`${session.source}:${session.id}`} className="block w-full py-4 text-left hover:bg-muted/30" onClick={() => setSelected(session)}>
-        <div className="text-xs text-muted-foreground">{session.source} · {new Date(session.updated_at).toLocaleString()}</div>
+        <div className="text-xs text-muted-foreground">{sourceLabels[session.source] ?? session.source} · {new Date(session.updated_at).toLocaleString(uiLocale)}</div>
         <h2 className="mt-1 text-sm font-medium">{session.title}</h2><p className="mt-1 text-xs text-muted-foreground">{session.preview}</p>
       </button>)}
       {!result.results.length && <p className="py-6 text-sm text-muted-foreground">No matching local sessions found in the bounded scan.</p>}
       {result.has_more && <p className="py-4 text-xs text-muted-foreground">More sessions matched. Narrow your search.</p>}
     </div>}
     {detail && <article className="mt-4"><h2 className="text-base font-medium">{detail.session.title}</h2>
-      <p className="mt-2 text-xs text-muted-foreground">Historical excerpt, limited to {detail.max_lines} source lines and {detail.max_characters} text characters. It may not include the end of this session.</p>
+      <p className="mt-2 text-xs text-muted-foreground">Historical excerpt, limited to {number(detail.max_lines)} source lines and {number(detail.max_characters)} text characters. It may not include the end of this session.</p>
       <pre className="mt-4 whitespace-pre-wrap break-words font-sans text-sm leading-6">{detail.text}</pre>
     </article>}
   </section>;

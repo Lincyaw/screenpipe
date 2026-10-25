@@ -17,7 +17,7 @@ type Snapshot = {
 };
 export const localizationSnapshot = bundled as Snapshot;
 const { defaultLocale, locales, translations } = localizationSnapshot;
-export const bundledLocales = [defaultLocale, ...locales];
+export const bundledLocales = [defaultLocale, ...locales.filter((locale) => Object.keys(translations[locale] ?? {}).length > 0)];
 
 // A local loader is mandatory even with a supplied provider snapshot: GT may
 // ask its cache for a missing locale. Never configure runtime credentials/CDN.
@@ -45,7 +45,10 @@ export function LocalizationProvider({ children }: { children: ReactNode }) {
   }, []);
   const configured = typeof settings.uiLocale === "string" ? settings.uiLocale : "system";
   const rolloutEnabled = settings.uiLocalizationEnabled === true;
-  const enabled = rolloutEnabled && locales.length > 0;
+  // Bundled Chinese is controlled by the local user, including existing
+  // profiles whose legacy remote pilot decision is false.
+  const bundledOfflineEnabled = locales.includes("zh-CN");
+  const enabled = (rolloutEnabled || bundledOfflineEnabled) && locales.length > 0;
   const locale = enabled ? resolveLocale(configured, system, bundledLocales, defaultLocale) : defaultLocale;
   useEffect(() => {
     document.documentElement.lang = locale;
@@ -57,12 +60,13 @@ export function LocalizationProvider({ children }: { children: ReactNode }) {
     document.documentElement.dir = info.getTextInfo?.().direction ?? info.textInfo?.direction ?? "ltr";
     // This is an allow-listed diagnostic summary: no message text or interpolation
     // values. The bridge includes it in the normal collected support report.
-    console.info("[localization]", JSON.stringify({ configured, resolved: locale, rolloutEnabled, revision: localizationSnapshot.revision, coverage: localizationSnapshot.coverage[locale], causes: localizationSnapshot.causes, fallbackCount: Object.keys(localizationSnapshot.fallbacks[locale] ?? {}).length }));
-  }, [configured, locale, rolloutEnabled, enabled]);
+    console.info("[localization]", JSON.stringify({ configured, resolved: locale, rolloutEnabled, bundledOfflineEnabled, revision: localizationSnapshot.revision, coverage: localizationSnapshot.coverage[locale], causes: localizationSnapshot.causes, fallbackCount: Object.keys(localizationSnapshot.fallbacks[locale] ?? {}).length }));
+  }, [configured, locale, rolloutEnabled, bundledOfflineEnabled, enabled]);
   return <LocalizationEnabledContext.Provider value={enabled}><LocaleContext.Provider value={locale}><OfflineGTProvider locale={locale} translations={translations}>{children}</OfflineGTProvider></LocaleContext.Provider></LocalizationEnabledContext.Provider>;
 }
 
 export function localeName(locale: string) {
+  if (locale === "zh-CN") return "简体中文";
   const name = getLocaleProperties(locale).nativeName;
   return name.charAt(0).toLocaleUpperCase(locale) + name.slice(1);
 }

@@ -8,7 +8,7 @@ export const appRoot = fileURLToPath(new URL("../../", import.meta.url));
 export const gtConfig = JSON.parse(readFileSync(new URL("../../gt.config.json", import.meta.url), "utf8"));
 
 export function localizationMode(value = process.env.SCREENPIPE_I18N_MODE) {
-  const mode = value ?? "off";
+  const mode = value ?? "cached";
   if (!["off", "cached", "generate"].includes(mode)) {
     throw new Error(`Invalid SCREENPIPE_I18N_MODE: ${mode}`);
   }
@@ -19,6 +19,6 @@ export function localizationMode(value = process.env.SCREENPIPE_I18N_MODE) {
 // Native adapters supply this as keyed context. Configure the GT project's
 // shared translation instructions with the same brief before the first run.
 export const translationPolicy = {
-  revision: 2,
-  context: "Screenpipe desktop interface. Use concise, clear interface language. Keep screenpipe, product names, brands, keyboard shortcuts, paths, and technical identifiers unchanged. Preserve placeholders and rich-text structure. In Japanese use natural, concise interface labels and polite desu/masu wording for explanatory sentences. Avoid literal English phrasing and unnecessary pronouns. Never translate user content, recorded content, transcripts, AI responses, or executable prompts.",
+  revision: 3,
+  context: "Screenpipe desktop interface. Use concise, clear interface language. Keep screenpipe, product names, brands, keyboard shortcuts, paths, and technical identifiers unchanged. Preserve placeholders and rich-text structure. In Simplified Chinese use natural, concise interface labels and direct explanatory sentences. In Japanese use natural, concise interface labels and polite desu/masu wording for explanatory sentences. Avoid literal English phrasing and unnecessary pronouns. Never translate user content, recorded content, transcripts, AI responses, or executable prompts.",
 };

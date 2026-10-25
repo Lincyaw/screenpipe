@@ -2,11 +2,13 @@
 // https://screenpipe.com
 "use client";
 
+import { useUiLocale } from "@/lib/i18n/provider";
+import { useGT } from "gt-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ChevronRight, Loader2, RefreshCw, Search, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { MarkEditor } from "@/components/explicit-memory/mark-editor";
+import { MarkEditor, useMemoryErrorText } from "@/components/explicit-memory/mark-editor";
 import { explicitMemoryApi, type MemoryMark } from "@/lib/explicit-memory";
 import { useTimelineStore } from "@/lib/hooks/use-timeline-store";
 import {
@@ -21,8 +23,6 @@ const localDateTime = (value: string) => {
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 19) : "";
 };
-const time = (value: string) => new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const day = (value: string) => new Date(value).toLocaleDateString();
 const errorText = (error: unknown) => error instanceof Error ? error.message : "Could not load local memory. Please refresh.";
 function bounds(start: string, end: string) {
   const from = new Date(`${start}T00:00:00`);
@@ -32,6 +32,12 @@ function bounds(start: string, end: string) {
 }
 
 export function MemoryExplorer() {
+  const ui = useGT();
+  const uiLocale = useUiLocale();
+  const memoryErrorText = useMemoryErrorText();
+  const number = (value: number) => value.toLocaleString(uiLocale);
+  const time = (value: string) => new Date(value).toLocaleTimeString(uiLocale, { hour: "2-digit", minute: "2-digit" });
+  const day = (value: string) => new Date(value).toLocaleDateString(uiLocale);
   const router = useRouter();
   const setPendingNavigation = useTimelineStore((state) => state.setPendingNavigation);
   const [tab, setTab] = useState<"tree" | "marks" | "search">("tree");
@@ -197,11 +203,11 @@ export function MemoryExplorer() {
         if (next.status === "ready" || next.status === "completed") {
           if (next.summary?.node_id === nodeId) setSummary(next.summary);
           setRefresh((value) => value + 1);
-          setNotice("Summary saved locally.");
+          setNotice(ui("Summary saved locally."));
         } else if (next.status === "failed" || next.status === "stale") {
           setSummary(null); setRefresh((value) => value + 1);
           if (next.status === "failed") setError("The local model could not finish this summary. Check Local summaries and retry.");
-          else setNotice("Sources changed while generating. Refresh and generate again.");
+          else setNotice(ui("Sources changed while generating. Refresh and generate again."));
         }
       }).catch((cause) => {
         if (!controller.signal.aborted && selectedNodeRef.current === nodeId && activeTabRef.current === "tree") {
@@ -254,7 +260,7 @@ export function MemoryExplorer() {
       if (correction === "merge") await api.merge(detail.node, mergeId, label);
       if (correction === "split") await api.split(detail.node, new Date(splitAt).toISOString(), label);
       setCorrection(null); setPath((previous) => previous.slice(0, -1)); setOffset(0);
-      setNotice("Correction saved. Reindexing will preserve it."); setRefresh((value) => value + 1);
+      setNotice(ui("Correction saved. Reindexing will preserve it.")); setRefresh((value) => value + 1);
     });
   }
   async function generateSummary(nodeId: string) {
@@ -264,7 +270,7 @@ export function MemoryExplorer() {
       if (result.node_id !== nodeId) throw new Error("The summary job belongs to another activity. Refresh to try again.");
       setJob(result);
       if (result.summary?.node_id === nodeId) setSummary(result.summary);
-      setNotice(result.cached ? "The saved summary is current." : "Summary queued on this computer.");
+      setNotice(result.cached ? ui("The saved summary is current.") : ui("Summary queued on this computer."));
     });
   }
   async function openCitation(citation: { source_type: string; source_id: string; timestamp: string }) {
@@ -274,83 +280,88 @@ export function MemoryExplorer() {
     }
     openSource(citation.timestamp, citation.source_type === "frame" ? Number(citation.source_id.replace(/^frame:/, "")) : undefined);
   }
-  const status = index?.privacy_pending ? "Privacy processing" : index?.pending_jobs || index?.rebuild_pending ? "Indexing" : index?.state || "Ready";
+  const stateLabels: Record<string, string> = { ready: ui("Ready"), pending: ui("Pending"), indexing: ui("Indexing"), partial: ui("Partial") };
+  const availabilityLabels: Record<string, string> = { disabled: ui("Disabled"), no_model: ui("No model"), available: ui("Available"), unavailable: ui("Unavailable"), unknown: ui("Unknown") };
+  const kindLabels: Record<string, string> = { day: ui("Day"), session: ui("Session"), task: ui("Task") };
+  const summaryStateLabels: Record<string, string> = { ready: ui("Ready"), pending: ui("Pending"), running: ui("Generating…"), retrying: ui("Retrying"), stale: ui("Stale"), failed: ui("Failed"), unavailable: ui("Unavailable") };
+  const sourceLabels: Record<string, string> = { frame: ui("Screen"), audio: ui("Audio"), ui_event: ui("Interaction"), user_note: ui("Your note"), existing_memory: ui("Saved memory"), semantic_context: ui("Parsed source") };
+  const status = index?.privacy_pending ? ui("Privacy processing") : index?.pending_jobs || index?.rebuild_pending ? ui("Indexing") : (index?.state ? stateLabels[index.state] ?? index.state : ui("Ready"));
   const jobBusy = !!job && ["pending", "running", "retrying"].includes(job.status);
   const renderMark = (mark: MemoryMark) => <article key={mark.id} className="space-y-2 rounded-lg border p-4">
-    <p className="text-xs text-muted-foreground">Your note · {day(mark.source_timestamp)} {time(mark.source_timestamp)} · {mark.source_app || "Captured screen"}</p>
-    <h3 className="font-medium break-words">{mark.title || "Untitled annotation"}</h3>
+    <p className="text-xs text-muted-foreground">Your note · {day(mark.source_timestamp)} {time(mark.source_timestamp)} · {mark.source_app || ui("Captured screen")}</p>
+    <h3 className="font-medium break-words">{mark.title || ui("Untitled annotation")}</h3>
     {mark.note && <p className="whitespace-pre-wrap break-words text-sm">{mark.note}</p>}
     {mark.tags.length > 0 && <p className="text-xs text-muted-foreground">{mark.tags.join(" · ")}</p>}
-    <p className="text-xs text-muted-foreground">{mark.retained_image ? "Source image retained" : "Original source"} · {mark.anchors.length} selections</p>
+    <p className="text-xs text-muted-foreground">{mark.retained_image ? ui("Source image retained") : ui("Original source")} · {number(mark.anchors.length)} selections</p>
     <div className="flex gap-2"><Button size="sm" variant="secondary" onClick={() => setEditor(mark)}>Open annotation</Button>
       {mark.frame_id !== null && <Button size="sm" variant="ghost" onClick={() => openMarkSource(mark)}>View source</Button>}</div>
   </article>;
   const renderEvidence = (evidence: MemoryEvidence) => <article key={`${evidence.source_type}:${evidence.source_id}`} className="border-l-2 pl-4 py-2 space-y-1">
-    <p className="text-xs text-muted-foreground">{evidence.source_type === "user_note" ? "Your note" : ["memory", "existing_memory"].includes(evidence.source_type) ? "Saved memory" : ["semantic", "semantic_context"].includes(evidence.source_type) ? "Parsed source" : "Captured evidence"} · {time(evidence.timestamp)} · {evidence.app_name || evidence.source_type}</p>
+    <p className="text-xs text-muted-foreground">{evidence.source_type === "user_note" ? ui("Your note") : ["memory", "existing_memory"].includes(evidence.source_type) ? ui("Saved memory") : ["semantic", "semantic_context"].includes(evidence.source_type) ? ui("Parsed source") : ui("Captured evidence")} · {time(evidence.timestamp)} · {evidence.app_name || sourceLabels[evidence.source_type] || evidence.source_type}</p>
     {evidence.excerpt && <p className="whitespace-pre-wrap break-words text-sm">{evidence.excerpt}</p>}
-    {evidence.available ? <Button size="sm" variant="ghost" onClick={() => openSource(evidence.timestamp, evidence.frame_id)}>{evidence.frame_id ? "View source" : "View time in timeline"}</Button> : <p className="text-xs text-muted-foreground">Source unavailable</p>}
+    {evidence.available ? <Button size="sm" variant="ghost" onClick={() => openSource(evidence.timestamp, evidence.frame_id)}>{evidence.frame_id ? ui("View source") : ui("View time in timeline")}</Button> : <p className="text-xs text-muted-foreground">Source unavailable</p>}
   </article>;
 
-  return <section aria-label="Memory explorer" aria-busy={busy} className="mx-auto w-full max-w-5xl px-6 py-6"><fieldset disabled={busy} className="m-0 min-w-0 space-y-5 border-0 p-0">
+  return <section aria-label={ui("Memory explorer")} aria-busy={busy} className="mx-auto w-full max-w-5xl px-6 py-6"><fieldset disabled={busy} className="m-0 min-w-0 space-y-5 border-0 p-0">
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div><h1 className="text-xl font-medium">Memory explorer</h1><p className="mt-1 text-sm text-muted-foreground">Browse days, sessions and tasks with their original sources.</p></div>
       <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => void showConfig()}><Settings2 className="mr-2 h-4 w-4" />Local summaries</Button>
-        <Button aria-label="Refresh memory" size="icon" variant="ghost" onClick={() => setRefresh((value) => value + 1)}><RefreshCw className="h-4 w-4" /></Button></div>
+        <Button aria-label={ui("Refresh memory")} size="icon" variant="ghost" onClick={() => setRefresh((value) => value + 1)}><RefreshCw className="h-4 w-4" /></Button></div>
     </header>
     <div className="flex flex-wrap items-center gap-3 border-y py-3">
-      <div role="tablist" aria-label="Memory views" className="flex gap-1">{([['tree', 'Activity tree'], ['marks', 'My marks'], ['search', 'Search memory']] as const).map(([value, title]) =>
+      <div role="tablist" aria-label={ui("Memory views")} className="flex gap-1">{([['tree', ui('Activity tree')], ['marks', ui('My marks')], ['search', ui('Search memory')]] as const).map(([value, title]) =>
         <Button key={value} role="tab" aria-selected={tab === value} size="sm" variant={tab === value ? "secondary" : "ghost"} onClick={() => { setTab(value); setOffset(0); setPath([]); setQuery(""); setCorrection(null); }}>{title}</Button>)}</div>
-      {index && <span className="ml-auto text-xs text-muted-foreground" role="status">{status} · {index.indexed_nodes} nodes{index.failed_jobs ? ` · ${index.failed_jobs} failed jobs` : ""}</span>}
+      {index && <span className="ml-auto text-xs text-muted-foreground" role="status">{status} · {number(index.indexed_nodes)} nodes{index.failed_jobs ? ui(" · {count} failed jobs", { count: number(index.failed_jobs) }) : ""}</span>}
     </div>
     {configOpen && <div className="space-y-3 rounded-lg border p-4">
       <h2 className="font-medium">Local summaries</h2>
       <p className="text-sm text-muted-foreground">Summaries are generated on this computer from bounded source excerpts. Your notes remain separate from model interpretations.</p>
-      {configLoading ? <p role="status" className="text-sm text-muted-foreground">Loading summary settings…</p> : configError ? <p role="alert" className="text-sm">{configError}<Button size="sm" variant="ghost" onClick={() => void loadConfig()}>Retry settings</Button></p> : config ? <>
+      {configLoading ? <p role="status" className="text-sm text-muted-foreground">Loading summary settings…</p> : configError ? <p role="alert" className="text-sm">{memoryErrorText(configError)}<Button size="sm" variant="ghost" onClick={() => void loadConfig()}>Retry settings</Button></p> : config ? <>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={config.enabled} onChange={(event) => setConfig({ ...config, enabled: event.target.checked })} />Enable local summaries</label>
-        <div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-sm">Local Ollama URL<input aria-label="Local Ollama URL" className={field} value={config.base_url} onChange={(event) => setConfig({ ...config, base_url: event.target.value })} /></label>
-          <label className="grid gap-1 text-sm">Model<input aria-label="Summary model" className={field} placeholder="qwen3:1.7b" value={config.model} onChange={(event) => setConfig({ ...config, model: event.target.value })} /></label></div>
+        <div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-sm">Local Ollama URL<input aria-label={ui("Local Ollama URL")} className={field} value={config.base_url} onChange={(event) => setConfig({ ...config, base_url: event.target.value })} /></label>
+          <label className="grid gap-1 text-sm">Model<input aria-label={ui("Summary model")} className={field} placeholder={ui("qwen3:1.7b")} value={config.model} onChange={(event) => setConfig({ ...config, model: event.target.value })} /></label></div>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={config.background} onChange={(event) => setConfig({ ...config, background: event.target.checked })} />Summarize closed tasks in the background</label>
-        <div className="flex items-center gap-3"><Button size="sm" disabled={busy || config.enabled && !config.model.trim()} onClick={() => void action(async () => { setConfig(await api.saveConfig(config)); setSummaryStatus(await api.summaryStatus()); setNotice("Local summary settings saved."); })}>Save summary settings</Button>
-          <span className="text-xs text-muted-foreground">{summaryStatus?.availability?.replaceAll("_", " ")} · up to {config.jobs_per_hour} jobs/hour</span></div>
+        <div className="flex items-center gap-3"><Button size="sm" disabled={busy || config.enabled && !config.model.trim()} onClick={() => void action(async () => { setConfig(await api.saveConfig(config)); setSummaryStatus(await api.summaryStatus()); setNotice(ui("Local summary settings saved.")); })}>Save summary settings</Button>
+          <span className="text-xs text-muted-foreground">{summaryStatus?.availability ? availabilityLabels[summaryStatus.availability] ?? summaryStatus.availability : ""} · up to {number(config.jobs_per_hour)} jobs/hour</span></div>
       </> : <p className="text-sm text-muted-foreground">Loading summary settings…</p>}
     </div>}
     {tab !== "marks" && <div className="flex flex-wrap items-end gap-3">
-      <label className="grid gap-1 text-xs text-muted-foreground">From<input aria-label="Memory start date" className={field} type="date" value={start} max={end} onChange={(event) => { if (event.target.value) { setStart(event.target.value); setPath([]); setOffset(0); } }} /></label>
-      <label className="grid gap-1 text-xs text-muted-foreground">Through<input aria-label="Memory end date" className={field} type="date" value={end} min={start} max={localDate(new Date())} onChange={(event) => { if (event.target.value) { setEnd(event.target.value); setPath([]); setOffset(0); } }} /></label>
-      <Button size="sm" variant="outline" disabled={busy || start > end || Date.parse(end) - Date.parse(start) > 30 * 86400000} onClick={() => void action(async () => { const range = bounds(start, end); await api.rebuild(range.start_time, range.end_time); setNotice("Indexing queued for the selected dates. Recording continues."); setRefresh((value) => value + 1); })}>Index selected dates</Button>
+      <label className="grid gap-1 text-xs text-muted-foreground">From<input aria-label={ui("Memory start date")} className={field} type="date" value={start} max={end} onChange={(event) => { if (event.target.value) { setStart(event.target.value); setPath([]); setOffset(0); } }} /></label>
+      <label className="grid gap-1 text-xs text-muted-foreground">Through<input aria-label={ui("Memory end date")} className={field} type="date" value={end} min={start} max={localDate(new Date())} onChange={(event) => { if (event.target.value) { setEnd(event.target.value); setPath([]); setOffset(0); } }} /></label>
+      <Button size="sm" variant="outline" disabled={busy || start > end || Date.parse(end) - Date.parse(start) > 30 * 86400000} onClick={() => void action(async () => { const range = bounds(start, end); await api.rebuild(range.start_time, range.end_time); setNotice(ui("Indexing queued for the selected dates. Recording continues.")); setRefresh((value) => value + 1); })}>Index selected dates</Button>
     </div>}
-    {tab !== "tree" && <label className="flex items-center gap-2"><Search className="h-4 w-4 text-muted-foreground" /><input aria-label={tab === "marks" ? "Search my marks" : "Search memory"} className={`${field} flex-1`} placeholder={tab === "marks" ? "Notes, selected text or tags" : "Search notes, tasks, summaries and source text"} value={query} onChange={(event) => { setQuery(event.target.value); setOffset(0); }} /></label>}
-    {error && <div role="alert" className="rounded-md border p-3 text-sm">{error}<Button size="sm" variant="ghost" onClick={() => setRefresh((value) => value + 1)}>Retry</Button></div>}
+    {tab !== "tree" && <label className="flex items-center gap-2"><Search className="h-4 w-4 text-muted-foreground" /><input aria-label={tab === "marks" ? ui("Search my marks") : ui("Search memory")} className={`${field} flex-1`} placeholder={tab === "marks" ? ui("Notes, selected text or tags") : ui("Search notes, tasks, summaries and source text")} value={query} onChange={(event) => { setQuery(event.target.value); setOffset(0); }} /></label>}
+    {error && <div role="alert" className="rounded-md border p-3 text-sm">{memoryErrorText(error)}<Button size="sm" variant="ghost" onClick={() => setRefresh((value) => value + 1)}>Retry</Button></div>}
     {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
     {loading ? <p role="status" className="flex items-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading local memory…</p> : <>
       {tab === "tree" && <>
-        {path.length > 0 && <nav aria-label="Memory path" className="flex flex-wrap items-center gap-1 text-sm"><Button size="sm" variant="ghost" onClick={() => { setPath([]); setOffset(0); setCorrection(null); }}><ArrowLeft className="mr-1 h-3 w-3" />Days</Button>{path.map((node, position) => <span key={node.id} className="flex items-center"><ChevronRight className="h-3 w-3" /><Button variant="ghost" size="sm" onClick={() => { setPath((previous) => previous.slice(0, position + 1)); setOffset(0); setCorrection(null); }}>{node.label}</Button></span>)}</nav>}
+        {path.length > 0 && <nav aria-label={ui("Memory path")} className="flex flex-wrap items-center gap-1 text-sm"><Button size="sm" variant="ghost" onClick={() => { setPath([]); setOffset(0); setCorrection(null); }}><ArrowLeft className="mr-1 h-3 w-3" />Days</Button>{path.map((node, position) => <span key={node.id} className="flex items-center"><ChevronRight className="h-3 w-3" /><Button variant="ghost" size="sm" onClick={() => { setPath((previous) => previous.slice(0, position + 1)); setOffset(0); setCorrection(null); }}>{node.label}</Button></span>)}</nav>}
         {detail && <div className="space-y-4 rounded-lg border p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs text-muted-foreground">{detail.node.kind} · {detail.node.provisional ? "Recent activity can still change" : "Closed activity"}{detail.node.label_origin === "user" ? " · Your label" : " · Derived label"}</p>
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs text-muted-foreground">{kindLabels[detail.node.kind] ?? detail.node.kind} · {detail.node.provisional ? ui("Recent activity can still change") : ui("Closed activity")}{detail.node.label_origin === "user" ? ui(" · Your label") : ui(" · Derived label")}</p>
             <h2 className="mt-1 text-lg font-medium break-words">{detail.node.label}</h2><p className="mt-1 text-xs text-muted-foreground">{day(detail.node.start_time)} · {time(detail.node.start_time)}–{time(detail.node.end_time)} · {detail.node.apps.join(" · ")}</p></div>
             <div className="flex flex-wrap gap-1"><Button size="sm" variant="ghost" onClick={() => void editCorrection("rename")}>Rename</Button>{detail.node.kind !== "day" && <><Button size="sm" variant="ghost" onClick={() => void editCorrection("merge")}>Merge</Button>{detail.node.kind === "task" && <Button size="sm" variant="ghost" onClick={() => void editCorrection("split")}>Split</Button>}</>}</div></div>
-          {correction && <div className="space-y-3 border-y py-3"><p className="text-sm">{correction === "rename" ? "Your label is preserved when the index refreshes." : correction === "merge" ? "Combine sibling activity while preserving its source evidence." : "Choose a boundary inside this activity. Original recordings stay intact."}</p>
-            <input aria-label="Activity label" className={`${field} w-full`} value={label} maxLength={200} onChange={(event) => setLabel(event.target.value)} />
+          {correction && <div className="space-y-3 border-y py-3"><p className="text-sm">{correction === "rename" ? ui("Your label is preserved when the index refreshes.") : correction === "merge" ? ui("Combine sibling activity while preserving its source evidence.") : ui("Choose a boundary inside this activity. Original recordings stay intact.")}</p>
+            <input aria-label={ui("Activity label")} className={`${field} w-full`} value={label} maxLength={200} onChange={(event) => setLabel(event.target.value)} />
             {correction === "merge" && <>
-              <div className="flex flex-wrap gap-2"><input aria-label="Find sibling activity" className={`${field} flex-1`} placeholder="Search sibling activity labels" maxLength={200} value={siblingQuery} onChange={(event) => setSiblingQuery(event.target.value)} /><Button size="sm" variant="outline" onClick={() => void findSiblings(detail.node, siblingQuery)}>Search activities</Button></div>
-              <select aria-label="Activity to merge" className={`${field} w-full`} value={mergeId} onChange={(event) => setMergeId(event.target.value)}><option value="">Choose a sibling activity</option>{siblings.map((node) => <option key={node.id} value={node.id}>{node.label} · {time(node.start_time)}</option>)}</select>
+              <div className="flex flex-wrap gap-2"><input aria-label={ui("Find sibling activity")} className={`${field} flex-1`} placeholder={ui("Search sibling activity labels")} maxLength={200} value={siblingQuery} onChange={(event) => setSiblingQuery(event.target.value)} /><Button size="sm" variant="outline" onClick={() => void findSiblings(detail.node, siblingQuery)}>Search activities</Button></div>
+              <select aria-label={ui("Activity to merge")} className={`${field} w-full`} value={mergeId} onChange={(event) => setMergeId(event.target.value)}><option value="">Choose a sibling activity</option>{siblings.map((node) => <option key={node.id} value={node.id}>{node.label} · {time(node.start_time)}</option>)}</select>
             </>}
-            {correction === "split" && <input aria-label="Split time" type="datetime-local" step="1" className={field} min={localDateTime(detail.node.start_time)} max={localDateTime(detail.node.end_time)} value={splitAt} onChange={(event) => setSplitAt(event.target.value)} />}
+            {correction === "split" && <input aria-label={ui("Split time")} type="datetime-local" step="1" className={field} min={localDateTime(detail.node.start_time)} max={localDateTime(detail.node.end_time)} value={splitAt} onChange={(event) => setSplitAt(event.target.value)} />}
             <div className="flex gap-2"><Button size="sm" disabled={busy || !label.trim() || correction === "merge" && !mergeId || correction === "split" && (!splitAt || Date.parse(splitAt) <= Date.parse(detail.node.start_time) || Date.parse(splitAt) >= Date.parse(detail.node.end_time))} onClick={() => void applyCorrection()}>Save correction</Button><Button size="sm" variant="ghost" onClick={() => setCorrection(null)}>Cancel</Button></div>
           </div>}
-          <div className="space-y-2 border-t pt-3"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-medium">Generated summary</h3><Button size="sm" variant="outline" disabled={busy || jobBusy || detail.node.provisional || summaryStatus?.enabled === false || summaryStatus?.configured === false} onClick={() => void generateSummary(detail.node.id)}>{jobBusy ? "Generating…" : summary?.status === "ready" ? "Refresh summary" : "Generate summary"}</Button></div>
-            {summary?.status === "ready" && summary.coverage && <p className="text-xs text-muted-foreground">Based on {summary.coverage.evidence_used}/{summary.coverage.evidence_total} source excerpts, {summary.coverage.marks_used}/{summary.coverage.marks_total} notes and {summary.coverage.children_used}/{summary.coverage.children_total} child summaries.{summary.coverage.truncated ? " Bounded coverage; follow sources for details." : ""}</p>}
-            {summary?.text ? <><p className="text-xs text-muted-foreground">Model interpretation · {summary.status} · {summary.model}{summary.generated_at ? ` · ${new Date(summary.generated_at).toLocaleString()}` : ""}</p><p className="whitespace-pre-wrap break-words text-sm">{summary.text}</p><div className="flex flex-wrap gap-1">{(summary.citations || []).map((citation, position) => <Button key={`${citation.source_type}:${citation.source_id}:${position}`} size="sm" variant="ghost" onClick={() => void openCitation(citation)}>{citation.source_type === "user_note" ? "Your note" : citation.source_type === "frame" ? `Source ${position + 1}` : "View time in timeline"} · {time(citation.timestamp)}</Button>)}</div></> : <p className="text-sm text-muted-foreground">{detail.node.provisional ? "Summaries become available after activity closes." : summary?.status === "failed" ? "Summary generation failed. Check the local model and retry." : summary?.status === "stale" ? "Sources or settings changed. Generate a fresh summary." : "Enable a local model in Local summaries, then generate a source-cited summary."}</p>}
+          <div className="space-y-2 border-t pt-3"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-medium">Generated summary</h3><Button size="sm" variant="outline" disabled={busy || jobBusy || detail.node.provisional || summaryStatus?.enabled === false || summaryStatus?.configured === false} onClick={() => void generateSummary(detail.node.id)}>{jobBusy ? ui("Generating…") : summary?.status === "ready" ? ui("Refresh summary") : ui("Generate summary")}</Button></div>
+            {summary?.status === "ready" && summary.coverage && <p className="text-xs text-muted-foreground">Based on {number(summary.coverage.evidence_used)}/{number(summary.coverage.evidence_total)} source excerpts, {number(summary.coverage.marks_used)}/{number(summary.coverage.marks_total)} notes and {number(summary.coverage.children_used)}/{number(summary.coverage.children_total)} child summaries.{summary.coverage.truncated ? ui(" Bounded coverage; follow sources for details.") : ""}</p>}
+            {summary?.text ? <><p className="text-xs text-muted-foreground">Model interpretation · {summaryStateLabels[summary.status] ?? summary.status} · {summary.model}{summary.generated_at ? ` · ${new Date(summary.generated_at).toLocaleString(uiLocale)}` : ""}</p><p className="whitespace-pre-wrap break-words text-sm">{summary.text}</p><div className="flex flex-wrap gap-1">{(summary.citations || []).map((citation, position) => <Button key={`${citation.source_type}:${citation.source_id}:${position}`} size="sm" variant="ghost" onClick={() => void openCitation(citation)}>{citation.source_type === "user_note" ? ui("Your note") : citation.source_type === "frame" ? ui("Source {number}", { number: number(position + 1) }) : ui("View time in timeline")} · {time(citation.timestamp)}</Button>)}</div></> : <p className="text-sm text-muted-foreground">{detail.node.provisional ? ui("Summaries become available after activity closes.") : summary?.status === "failed" ? ui("Summary generation failed. Check the local model and retry.") : summary?.status === "stale" ? ui("Sources or settings changed. Generate a fresh summary.") : ui("Enable a local model in Local summaries, then generate a source-cited summary.")}</p>}
           </div>
         </div>}
         <div className="grid gap-2">{nodes.map((node) => <button key={node.id} type="button" onClick={() => openNode(node)} className="flex items-center gap-3 rounded-lg border p-4 text-left hover:bg-muted/50 focus-visible:outline focus-visible:outline-2">
-          <div className="min-w-0 flex-1"><p className="text-xs text-muted-foreground">{node.kind} · {node.kind === "day" ? day(node.start_time) : `${time(node.start_time)}–${time(node.end_time)}`}{node.provisional ? " · Provisional" : ""}</p><p className="mt-1 break-words font-medium">{node.label}</p><p className="mt-1 text-xs text-muted-foreground">{node.evidence_count} sources · {node.mark_count} notes · {node.apps.join(" · ")}</p></div><ChevronRight className="h-4 w-4 shrink-0" /></button>)}</div>
+          <div className="min-w-0 flex-1"><p className="text-xs text-muted-foreground">{kindLabels[node.kind] ?? node.kind} · {node.kind === "day" ? day(node.start_time) : `${time(node.start_time)}–${time(node.end_time)}`}{node.provisional ? ui(" · Provisional") : ""}</p><p className="mt-1 break-words font-medium">{node.label}</p><p className="mt-1 text-xs text-muted-foreground">{number(node.evidence_count)} sources · {number(node.mark_count)} notes · {node.apps.join(" · ")}</p></div><ChevronRight className="h-4 w-4 shrink-0" /></button>)}</div>
         {!nodes.length && !detail && !error && <p className="py-10 text-center text-sm text-muted-foreground">No indexed activity in these dates. Choose Index selected dates to process saved recordings.</p>}
-        {detail && <><div className="space-y-3"><h3 className="font-medium">Your notes · {detail.mark_total}</h3>{detail.marks.map(renderMark)}{!detail.marks.length && <p className="text-sm text-muted-foreground">No annotations in this activity.</p>}</div><div className="space-y-3"><h3 className="font-medium">Source evidence · {detail.evidence_total}</h3>{detail.evidence.map(renderEvidence)}{detail.truncated && <p className="text-xs text-muted-foreground">This is a bounded excerpt. Open a child activity or narrow the dates to inspect more sources.</p>}</div></>}
+        {detail && <><div className="space-y-3"><h3 className="font-medium">Your notes · {number(detail.mark_total)}</h3>{detail.marks.map(renderMark)}{!detail.marks.length && <p className="text-sm text-muted-foreground">No annotations in this activity.</p>}</div><div className="space-y-3"><h3 className="font-medium">Source evidence · {number(detail.evidence_total)}</h3>{detail.evidence.map(renderEvidence)}{detail.truncated && <p className="text-xs text-muted-foreground">This is a bounded excerpt. Open a child activity or narrow the dates to inspect more sources.</p>}</div></>}
       </>}
-      {tab === "marks" && <div className="grid gap-3">{marks.map(renderMark)}{!marks.length && !error && <p className="py-10 text-center text-sm text-muted-foreground">{query ? "No matching annotations." : "No marks yet. Press Control + Command + M in another app to annotate a moment."}</p>}</div>}
-      {tab === "search" && <div className="grid gap-3">{hits.map((hit, position) => hit.mark ? renderMark(hit.mark) : hit.node ? <button key={`node:${hit.node.id}:${position}`} className="rounded-lg border p-4 text-left space-y-1 hover:bg-muted/50" onClick={() => { setTab("tree"); setPath([hit.node!]); setOffset(0); }}><p className="text-xs text-muted-foreground">{hit.kind === "generated_summary" ? "Model interpretation" : "Derived activity"} · {hit.node.kind}</p><p className="font-medium">{hit.node.label}</p><p className="text-xs text-muted-foreground">{day(hit.node.start_time)} · {hit.node.evidence_count} sources</p></button> : hit.evidence ? <div key={`evidence:${position}`}>{renderEvidence(hit.evidence)}</div> : null)}{!hits.length && !error && <p className="py-10 text-center text-sm text-muted-foreground">{query.trim() ? "No matching memory in the selected dates." : "Enter a phrase to search notes, tasks, summaries and source text."}</p>}</div>}
-      <div className="flex items-center justify-between border-t pt-3"><Button size="sm" variant="ghost" disabled={offset === 0} onClick={() => setOffset((value) => Math.max(0, value - (tab === "marks" ? 50 : 30)))}>Previous</Button><span className="text-xs text-muted-foreground">{tab === "marks" ? `${markTotal} annotations` : index?.coverage_start && index.coverage_end ? `Indexed ${day(index.coverage_start)} – ${day(index.coverage_end)}` : "Source-backed local memory"}</span><Button size="sm" variant="ghost" disabled={tab === "marks" ? offset + marks.length >= markTotal : (tab === "tree" ? nodes.length : hits.length) < 30} onClick={() => setOffset((value) => value + (tab === "marks" ? 50 : 30))}>Next</Button></div>
+      {tab === "marks" && <div className="grid gap-3">{marks.map(renderMark)}{!marks.length && !error && <p className="py-10 text-center text-sm text-muted-foreground">{query ? ui("No matching annotations.") : ui("No marks yet. Press Control + Command + M in another app to annotate a moment.")}</p>}</div>}
+      {tab === "search" && <div className="grid gap-3">{hits.map((hit, position) => hit.mark ? renderMark(hit.mark) : hit.node ? <button key={`node:${hit.node.id}:${position}`} className="rounded-lg border p-4 text-left space-y-1 hover:bg-muted/50" onClick={() => { setTab("tree"); setPath([hit.node!]); setOffset(0); }}><p className="text-xs text-muted-foreground">{hit.kind === "generated_summary" ? ui("Model interpretation") : ui("Derived activity")} · {kindLabels[hit.node.kind] ?? hit.node.kind}</p><p className="font-medium">{hit.node.label}</p><p className="text-xs text-muted-foreground">{day(hit.node.start_time)} · {number(hit.node.evidence_count)} sources</p></button> : hit.evidence ? <div key={`evidence:${position}`}>{renderEvidence(hit.evidence)}</div> : null)}{!hits.length && !error && <p className="py-10 text-center text-sm text-muted-foreground">{query.trim() ? ui("No matching memory in the selected dates.") : ui("Enter a phrase to search notes, tasks, summaries and source text.")}</p>}</div>}
+      <div className="flex items-center justify-between border-t pt-3"><Button size="sm" variant="ghost" disabled={offset === 0} onClick={() => setOffset((value) => Math.max(0, value - (tab === "marks" ? 50 : 30)))}>Previous page</Button><span className="text-xs text-muted-foreground">{tab === "marks" ? ui("{count} annotations", { count: number(markTotal) }) : index?.coverage_start && index.coverage_end ? ui("Indexed {start} – {end}", { start: day(index.coverage_start), end: day(index.coverage_end) }) : ui("Source-backed local memory")}</span><Button size="sm" variant="ghost" disabled={tab === "marks" ? offset + marks.length >= markTotal : (tab === "tree" ? nodes.length : hits.length) < 30} onClick={() => setOffset((value) => value + (tab === "marks" ? 50 : 30))}>Next page</Button></div>
     </>}
     </fieldset>{editor && <MarkEditor source={{ frameId: editor.source_frame_id, timestamp: editor.source_timestamp, app: editor.source_app || "" }} mark={editor} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); setRefresh((value) => value + 1); }} />}
   </section>;

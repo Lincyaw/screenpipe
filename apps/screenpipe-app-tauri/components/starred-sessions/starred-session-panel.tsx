@@ -1,6 +1,8 @@
 // screenpipe — AI that knows everything you've seen, said, or heard
 // https://screenpipe.com
 
+import { useGT } from "gt-react";
+import { useUiLocale } from "@/lib/i18n/provider";
 import { useEffect, useRef, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { showChatWithPrefill } from "@/lib/chat-utils";
@@ -26,6 +28,22 @@ export function StarredSessionPanel({
   inDialog?: boolean;
   onDismiss?: () => void;
 }) {
+  const ui = useGT();
+  const uiLocale = useUiLocale();
+  const number = (value: number) => value.toLocaleString(uiLocale);
+  const errorText = (message: string) => {
+    switch (message) {
+      case "Enter a valid date and time.": return ui("Enter a valid date and time.");
+      case "End time must be after start time.": return ui("End time must be after start time.");
+      case "Could not complete this action.": return ui("Could not complete this action.");
+      case "Could not save the session. Try again.": return ui("Could not save the session. Try again.");
+      case "Could not save the session.": return ui("Could not save the session.");
+      case "Could not read starred sessions.": return ui("Could not read starred sessions.");
+      case "End the session before exporting.": return ui("End the session before exporting.");
+      case "Export did not return a saved video.": return ui("Export did not return a saved video.");
+      default: return message;
+    }
+  };
   const [selected, setSelected] = useState<string>();
   const [hd, setHd] = useState(false);
   const [activity, setActivity] = useState(0);
@@ -89,7 +107,7 @@ export function StarredSessionPanel({
   const showSession = session;
   const active = showSession && session.id === state.active?.id;
   const timeLabel = (iso: string) =>
-    new Date(iso).toLocaleTimeString([], {
+    new Date(iso).toLocaleTimeString(uiLocale, {
       hour: "numeric",
       minute: "2-digit",
     });
@@ -128,7 +146,7 @@ export function StarredSessionPanel({
   }
   return (
     <section
-      aria-label="Starred work sessions"
+      aria-label={ui("Starred work sessions")}
       className="w-full rounded-lg bg-black p-3 text-xs text-white/90"
       onPointerDown={(e) => { e.stopPropagation(); setActivity((v) => v + 1); }}
       onPointerMove={() => setActivity((v) => v + 1)}
@@ -137,11 +155,11 @@ export function StarredSessionPanel({
       <div className={`flex items-center justify-between gap-2 ${inDialog ? "pr-8" : ""}`}>
         <p className="font-medium">
           {active
-            ? "Starred session in progress"
+            ? ui("Starred session in progress")
             : showSession
-              ? "Starred session"
-              : "Star for"}
-          {active && session.hd_requested && <span className="ml-2 text-white/50" title="HD requested for this session">HD</span>}
+              ? ui("Starred session")
+              : ui("Star for")}
+          {active && session.hd_requested && <span className="ml-2 text-white/50" title={ui("HD requested for this session")}>HD</span>}
         </p>
         {active && (
           <button
@@ -153,9 +171,9 @@ export function StarredSessionPanel({
           </button>
         )}
       </div>
-      {active && <p role="status" className="mt-1 text-white/60">{Math.max(1, Math.ceil((Date.parse(session.end) - state.now) / 60000))} min left</p>}
+      {active && <p role="status" className="mt-1 text-white/60">{ui("{count} min left", { count: number(Math.max(1, Math.ceil((Date.parse(session.end) - state.now) / 60000))) })}</p>}
       {(!showSession || active) && (
-        <div className="mt-3 grid grid-cols-4 gap-1" aria-label="Star for">
+        <div className="mt-3 grid grid-cols-4 gap-1" aria-label={ui("Star for")}>
           {[5, 15, 30, 60].map((minutes) => (
             <button
               key={minutes}
@@ -173,14 +191,14 @@ export function StarredSessionPanel({
                 })
               }
             >
-              {minutes} min
+              {ui("{count} min", { count: number(minutes) })}
             </button>
           ))}
         </div>
       )}
       {state.error && (
         <div role="alert" className="mt-2">
-          {state.error}{" "}
+          {errorText(state.error)}{" "}
           <button
             className={action}
             disabled={state.busy || working}
@@ -197,7 +215,7 @@ export function StarredSessionPanel({
           {new Date(session.start).toDateString() !==
             new Date(state.now).toDateString() && (
             <p className="text-white/50">
-              {new Date(session.start).toLocaleDateString()}
+              {new Date(session.start).toLocaleDateString(uiLocale)}
             </p>
           )}
           <div className="space-y-1">
@@ -206,10 +224,10 @@ export function StarredSessionPanel({
                 key={key}
                 className="grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-2"
               >
-                <span className="capitalize text-white/50">{key}</span>
+                <span className="capitalize text-white/50">{key === "start" ? ui("Start") : ui("End")}</span>
                 {editing?.key === key ? (
                   <input
-                    aria-label={`Session ${key}`}
+                    aria-label={key === "start" ? ui("Session start") : ui("Session end")}
                     type="datetime-local"
                     step="1"
                     required
@@ -238,8 +256,8 @@ export function StarredSessionPanel({
                       timeButtons.current[key] = element;
                     }}
                     type="button"
-                    aria-label={`Edit session ${key}`}
-                    title={`Edit ${key} time`}
+                    aria-label={key === "start" ? ui("Edit session start") : ui("Edit session end")}
+                    title={key === "start" ? ui("Edit start time") : ui("Edit end time")}
                     disabled={disabled}
                     className="rounded px-1 py-1 text-left tabular-nums text-white/80 hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-1 focus-visible:outline-white/60 disabled:opacity-50"
                     onClick={() => {
@@ -251,7 +269,7 @@ export function StarredSessionPanel({
                   >
                     {sameDay
                       ? timeLabel(session[key])
-                      : new Date(session[key]).toLocaleString()}
+                      : new Date(session[key]).toLocaleString(uiLocale)}
                   </button>
                 )}
               </div>
@@ -290,8 +308,8 @@ export function StarredSessionPanel({
             <select
               aria-label={
                 active
-                  ? "Active session capture quality"
-                  : "Session capture quality"
+                  ? ui("Active session capture quality")
+                  : ui("Session capture quality")
               }
               className="rounded-md border border-white/30 bg-black p-1"
               disabled={disabled || Boolean(showSession && !active)}
@@ -313,7 +331,7 @@ export function StarredSessionPanel({
           </label>
           {state.sessions.length > 1 && (
             <select
-              aria-label="Saved session"
+              aria-label={ui("Saved session")}
               className="block w-full rounded-md border border-white/30 bg-black p-1.5"
               value={session?.id}
               disabled={disabled}
@@ -325,7 +343,7 @@ export function StarredSessionPanel({
             >
               {state.sessions.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {new Date(s.start).toLocaleString()}
+                  {new Date(s.start).toLocaleString(uiLocale)}
                 </option>
               ))}
             </select>
@@ -345,7 +363,7 @@ export function StarredSessionPanel({
                     )
                   }
                 >
-                  {working ? "Exporting…" : "Export video"}
+                  {working ? ui("Exporting…") : ui("Export video")}
                 </button>
               )}
               <button
@@ -380,7 +398,7 @@ export function StarredSessionPanel({
       </details>
       {error && (
         <p role="alert" className="mt-2">
-          {error}
+          {errorText(error)}
         </p>
       )}
     </section>

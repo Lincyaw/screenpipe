@@ -309,14 +309,14 @@ export function AiToolsCard({ onChanged }: { onChanged?: () => void }) {
   if (detected.length === 0 && !perplexityDetected) return null;
 
   const summary = rows.length === 0
-    ? "Perplexity found. Finish setup in the app."
+    ? ui("Perplexity found. Finish setup in the app.")
     : perplexityDetected
-    ? `${connectedCount} of ${rows.length} automatic connections set up`
+    ? ui("{connected, number} of {total, number} automatic connections set up", { connected: connectedCount, total: rows.length })
     : noneConnected
-    ? `${rows.length} found. Connect ${rows.length === 1 ? "it" : "them"} in one click.`
+    ? ui("{count, plural, one {# found. Connect it in one click.} other {# found. Connect them in one click.}}", { count: rows.length })
     : allConnected
-    ? `All ${rows.length} connected`
-    : `${connectedCount} of ${rows.length} connected`;
+    ? ui("All {count, number} connected", { count: rows.length })
+    : ui("{connected, number} of {total, number} connected", { connected: connectedCount, total: rows.length });
 
 
   return (
@@ -495,7 +495,7 @@ export function AiToolsCard({ onChanged }: { onChanged?: () => void }) {
           {hasAnyConnection && (
             <div className="flex items-center justify-between pt-2.5">
               <span className="text-[11px] text-muted-foreground/70">
-                {connectedCount} of {rows.length} connected
+                {ui("{connected, number} of {total, number} connected", { connected: connectedCount, total: rows.length })}
               </span>
               <span className="flex items-center gap-2">
                 <button

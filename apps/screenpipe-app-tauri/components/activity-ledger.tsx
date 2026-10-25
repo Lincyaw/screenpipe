@@ -149,20 +149,6 @@ const DEFAULT_ACTIVITY_REVIEW_PRESET: AIPreset = {
   maxTokens: 8_192,
 };
 
-const RANGE_COPY: Record<RangePreset, string> = {
-  today: "Today",
-  "24h": "Last 24 hours",
-  "7d": "Last 7 days",
-  custom: "Custom range",
-};
-
-const RANGE_SHORT_COPY: Record<RangePreset, string> = {
-  today: "Today",
-  "24h": "24h",
-  "7d": "7d",
-  custom: "Custom",
-};
-
 export function activityRangePresets(
   historyAccessRestricted: boolean,
 ): RangePreset[] {
@@ -1349,6 +1335,13 @@ export function ActivityLedger({
 
   const ui = useGT();
   const uiLocale = useUiLocale();
+  const rangeCopy: Record<RangePreset, string> = {
+    today: ui("Today"), "24h": ui("Last 24 hours"),
+    "7d": ui("Last 7 days"), custom: ui("Custom range"),
+  };
+  const rangeShortCopy: Record<RangePreset, string> = {
+    today: ui("Today"), "24h": ui("24h"), "7d": ui("7d"), custom: ui("Custom"),
+  };
   const router = useRouter();
   const setPendingNavigation = useTimelineStore(
     (state) => state.setPendingNavigation,
@@ -1962,17 +1955,17 @@ export function ActivityLedger({
                 <SelectTrigger
                   className="h-9 w-auto min-w-0 shrink-0 justify-center gap-1.5 rounded-md px-2 text-xs [&>svg:last-child]:hidden"
                   data-testid="activity-range"
-                  aria-label={ui("Time range: {value1}", { value1: RANGE_COPY[preset] })}
-                  title={ui("Time range: {value1}", { value1: RANGE_COPY[preset] })}
+                  aria-label={ui("Time range: {value1}", { value1: rangeCopy[preset] })}
+                  title={ui("Time range: {value1}", { value1: rangeCopy[preset] })}
                 >
                   <CalendarRange className="h-4 w-4" aria-hidden="true" />
-                  <span aria-hidden="true">{RANGE_SHORT_COPY[preset]}</span>
+                  <span aria-hidden="true">{rangeShortCopy[preset]}</span>
                 </SelectTrigger>
                 <SelectContent>
                   {activityRangePresets(activityHistoryRestricted).map(
                     (value) => (
                       <SelectItem key={value} value={value}>
-                        {RANGE_COPY[value]}
+                        {rangeCopy[value]}
                       </SelectItem>
                     ),
                   )}
@@ -1982,7 +1975,7 @@ export function ActivityLedger({
                 <AIPresetsSelector
                   compact
                   showModelOnly
-                  triggerAriaLabel="AI preset"
+                  triggerAriaLabel={ui("AI preset")}
                   containerClassName="w-[190px] max-w-[36vw] min-w-[132px] shrink-0 gap-0"
                   triggerClassName="h-9 rounded-md border border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none transition-colors duration-150 hover:border-border hover:bg-muted/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-signal focus-visible:ring-offset-1 motion-reduce:transition-none"
                   controlledPresetId={reviewPreset.id}

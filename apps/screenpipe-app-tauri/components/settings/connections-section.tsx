@@ -929,8 +929,8 @@ function McpSpotlight({
 }) {
   const ui = useGT();
   const summary = totalCount === 0
-    ? "None added"
-    : `${enabledCount} active`;
+    ? ui("None added")
+    : ui("{count, number} active", { count: enabledCount });
 
   return (
     <div
@@ -4556,7 +4556,7 @@ export function ConnectionsSection({
               <div className="min-w-0 flex-1">
                 <h3 className="text-sm font-medium text-foreground">Browse all apps</h3>
                 <p className="text-xs text-muted-foreground">
-                  {integrationsLoaded ? `${catalogTileCount} more` : ui("Loading apps")}
+                  {integrationsLoaded ? ui("{count, number} more", { count: catalogTileCount }) : ui("Loading apps")}
                 </p>
               </div>
               <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" />

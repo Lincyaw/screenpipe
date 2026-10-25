@@ -6,6 +6,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { appRoot, gtConfig, localizationMode, translationPolicy } from "./config.mjs";
 import { validateCatalog } from "./validate.mjs";
+import { bundledCatalogs, bundledTranslations } from "./bundled.mjs";
 
 export function digest(value) {
   return createHash("sha256").update(typeof value === "string" ? value : canonical(value)).digest("hex");
@@ -134,7 +135,8 @@ function coverage(result) { return { total: result.total, translated: result.tra
 export async function prepareLocalization({ root = appRoot, mode = localizationMode(), config = gtConfig, run = runGT } = {}) {
   const output = path.join(root, "lib/i18n/generated.json");
   const policy = digest(translationPolicy);
-  const base = { schemaVersion: 1, mode, defaultLocale: config.defaultLocale, locales: mode === "off" ? [] : config.locales, policy, translations: {}, native: {}, coverage: {}, fallbacks: {}, causes: [] };
+  const bundledRevision = digest(bundledCatalogs);
+  const base = { schemaVersion: 1, mode, defaultLocale: config.defaultLocale, locales: mode === "off" ? [] : config.locales, policy, bundledRevision, translations: {}, native: {}, coverage: {}, fallbacks: {}, causes: [] };
   if (mode === "off") {
     const snapshot = { ...base, revision: digest(base) };
     await writeJson(output, snapshot);
@@ -154,7 +156,7 @@ export async function prepareLocalization({ root = appRoot, mode = localizationM
   const extracted = await run(["generate", "--config", sourceConfigPath, "--omit-config-ids"], root);
   if (extracted.exitCode !== 0) throw new Error(`Localization source extraction failed:\n${extracted.output}`);
   const source = await readJson(path.join(dir, "source", `${config.defaultLocale}.json`));
-  const sourceIdentity = digest({ source, native: native.messages, policy });
+  const sourceIdentity = digest({ source, native: native.messages, policy, bundledRevision });
   const previous = await readJson(path.join(dir, "snapshot.json"), null);
   if (previous) verifySnapshot(previous);
   if (process.env.SCREENPIPE_I18N_SNAPSHOT) {
@@ -199,16 +201,26 @@ export async function prepareLocalization({ root = appRoot, mode = localizationM
   const downloaded = base.causes.includes("generated");
   base.causes = base.causes.filter((cause) => cause !== "generated");
   for (const locale of config.locales) {
+    // A removed or corrected reviewed entry must not survive in an old local
+    // snapshot. Other languages retain their independent provider cache.
+    const localeCache = bundledCatalogs[locale] && cache?.bundledRevision !== bundledRevision ? null : cache;
     const gt = downloaded ? await readJson(path.join(dir, "gt", `${locale}.json`)) : {};
     const nativeGt = downloaded ? await readJson(path.join(dir, "native", `${locale}.json`)) : {};
     const validDownload = validateCatalog(source, gt, config.defaultLocale, locale);
     const validNativeDownload = validateCatalog(native.messages, nativeGt, config.defaultLocale, locale);
-    const frontend = validateCatalog(source, { ...cache?.translations?.[locale], ...validDownload.valid }, config.defaultLocale, locale);
-    const nativeResult = validateCatalog(native.messages, { ...cache?.native?.[locale], ...validNativeDownload.valid }, config.defaultLocale, locale);
+    const localFrontend = bundledTranslations(source, locale);
+    const localNative = bundledTranslations(native.messages, locale, "native");
+    const reviewedFrontend = validateCatalog(source, localFrontend, config.defaultLocale, locale);
+    const reviewedNative = validateCatalog(native.messages, localNative, config.defaultLocale, locale);
+    if (reviewedFrontend.translated !== Object.keys(localFrontend).length || reviewedNative.translated !== Object.keys(localNative).length) {
+      throw new Error(`Invalid bundled translation structure or placeholders for ${locale}`);
+    }
+    const frontend = validateCatalog(source, { ...localeCache?.translations?.[locale], ...validDownload.valid, ...reviewedFrontend.valid }, config.defaultLocale, locale);
+    const nativeResult = validateCatalog(native.messages, { ...localeCache?.native?.[locale], ...validNativeDownload.valid, ...reviewedNative.valid }, config.defaultLocale, locale);
     // Rejected entries are deliberately absent from the valid cache. Keep their
     // technical cause while that same source hash still falls back after a
     // restart/offline rebuild, instead of degrading it to "missing".
-    for (const [id, cause] of Object.entries(cache?.fallbacks?.[locale] ?? {})) {
+    for (const [id, cause] of Object.entries(localeCache?.fallbacks?.[locale] ?? {})) {
       if (frontend.fallbacks[id]) frontend.fallbacks[id] = cause;
       if (nativeResult.fallbacks[id]) nativeResult.fallbacks[id] = cause;
     }

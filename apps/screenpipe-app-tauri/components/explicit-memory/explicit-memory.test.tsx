@@ -50,15 +50,16 @@ describe("explicit memory opt-in and retrieval", () => {
     await act(async () => { fireEvent.click(button); });
     expect(onOpenSource).toHaveBeenCalledWith(mark);
   });
-  it("waits for exact-source confirmation before closing the marks drawer", async () => {
+  it("releases the native timeline occluder while exact-source navigation is pending", async () => {
     const api = fakeApi();
     let finish: () => void = () => {};
     const onOpenSource = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
     render(<MemoryTools source={source} api={api} initiallyEnabled onOpenSource={onOpenSource} />);
     fireEvent.click(screen.getByRole("button", { name: "My marks" }));
     fireEvent.click(await screen.findByRole("button", { name: "View in timeline" }));
-    expect(screen.getByRole("button", { name: "Opening exact source…" })).toBeDisabled();
-    expect(screen.getByRole("dialog")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Opening exact source…");
+    expect(screen.getByRole("button", { name: "My marks" })).toBeDisabled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await act(async () => { finish(); });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });

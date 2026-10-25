@@ -38,10 +38,10 @@ async function fixture() {
   return { root, source, calls, run };
 }
 
-test("off is the default and never invokes GT even with credentials", async () => {
+test("cached is the default and explicit off never invokes GT even with credentials", async () => {
   const { root, run, calls } = await fixture();
   process.env.GT_API_KEY = "test-only"; process.env.GT_PROJECT_ID = "test-only";
-  expect(localizationMode(undefined)).toBe("off");
+  expect(localizationMode(undefined)).toBe("cached");
   expect(() => localizationMode("enabled")).toThrow();
   const result = await prepareLocalization({ root, config, mode: "off", run });
   expect(calls).toEqual([]);
