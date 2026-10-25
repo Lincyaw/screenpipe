@@ -433,7 +433,7 @@ function DiscoverView({ onInstalled }: { onInstalled?: () => void }) {
   const { settings } = useSettings();
   const { toast } = useToast();
   const openFeedback = useFeedbackStore((s) => s.openFeedback);
-  const token = settings.user?.token;
+  const token: string | undefined = undefined;
 
   // Browse state
   const [pipes, setPipes] = useState<StorePipe[]>([]);

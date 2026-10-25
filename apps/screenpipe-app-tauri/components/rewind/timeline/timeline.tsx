@@ -4,7 +4,7 @@
 import { StreamTimeSeriesResponse, TimeRange } from "@/components/rewind/timeline";
 import { useTimelineSelection } from "@/lib/hooks/use-timeline-selection";
 import { getStore, type ChatConversation } from "@/lib/hooks/use-settings";
-import { isAfter, subDays, addDays, startOfDay, format, formatDistanceToNow } from "date-fns";
+import { isAfter, subDays, addDays, startOfDay, format } from "date-fns";
 import { motion } from "framer-motion";
 import { ZoomIn, ZoomOut, Mic, Monitor, AppWindow, Globe, Hash, RotateCcw, Phone, PanelBottomClose, PanelBottomOpen, Clock } from "lucide-react";
 import type { Meeting } from "@/lib/hooks/use-meetings";
@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { commands } from "@/lib/utils/tauri";
 import { emit } from "@tauri-apps/api/event";
 import { PipeAIIcon } from "@/components/pipe-ai-icon";
-import { type TemplatePipe } from "@/lib/hooks/use-pipes";
+
 import { AppContextPopover } from "./app-context-popover";
 import { TimelineTagToolbar } from "./timeline-tag-toolbar";
 import { extractDomain, FaviconImg } from "./favicon-utils";
@@ -124,9 +124,6 @@ interface TimelineSliderProps {
 	zoomLevel: number;
 	targetZoom: number;
 	setTargetZoom: (fn: (prev: number) => number) => void;
-	onAskAI?: () => void;
-	onRunPipe?: (pipe: TemplatePipe) => void;
-	templatePipes?: TemplatePipe[];
 	isPlaying?: boolean; // Whether audio playback is active
 	onTogglePlayPause?: () => void; // Toggle audio playback (Space key)
 	selectedDeviceId?: string; // "all" or a specific device_id — dims non-matching bars
@@ -388,9 +385,6 @@ export const TimelineSlider = ({
 	zoomLevel,
 	targetZoom,
 	setTargetZoom,
-	onAskAI,
-	onRunPipe,
-	templatePipes,
 	isPlaying = false,
 	onTogglePlayPause,
 	selectedDeviceId = "all",
@@ -2074,7 +2068,7 @@ export const TimelineSlider = ({
 
 			{/* Tag toolbar — floating above selection */}
 			{selectedIndices.size > 1 && selectionRange && (
-				<TimelineTagToolbar anchorRect={selectionRect} onAskAI={onAskAI} onRunPipe={onRunPipe} templatePipes={templatePipes} />
+				<TimelineTagToolbar anchorRect={selectionRect} />
 			)}
 
 			{/* App filter dot tooltip */}

@@ -564,12 +564,39 @@ fn refresh_desktop_skills(layout: &AgentLayout) -> Result<()> {
     Ok(())
 }
 
+fn local_mcp_override(name: &str, executable: bool) -> Result<Option<PathBuf>> {
+    let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(value);
+    anyhow::ensure!(
+        path.is_absolute() && path.is_file() && path.to_str().is_some(),
+        "{name} must point to an existing absolute local file"
+    );
+    #[cfg(unix)]
+    if executable {
+        use std::os::unix::fs::PermissionsExt;
+        anyhow::ensure!(
+            path.metadata()?.permissions().mode() & 0o111 != 0,
+            "{name} must point to an executable local file"
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = executable;
+    Ok(Some(path))
+}
+
 fn desktop_launch_config(
     bun_path: &Path,
     api_key: Option<&str>,
     api_url: &str,
     agent: DesktopDetectedAgent,
-) -> McpLaunchConfig {
+) -> Result<McpLaunchConfig> {
+    // Source builds may explicitly select an already-built local MCP. Never
+    // interpret these paths as package names or silently download a fallback.
+    let entrypoint = local_mcp_override("SCREENPIPE_MCP_ENTRYPOINT", false)?;
+    let command =
+        local_mcp_override("SCREENPIPE_MCP_BUN", true)?.unwrap_or_else(|| bun_path.to_path_buf());
     let mut env = BTreeMap::from([
         ("SCREENPIPE_API_URL".to_string(), api_url.to_string()),
         ("SCREENPIPE_MCP_CLIENT".to_string(), agent.id.to_string()),
@@ -577,13 +604,16 @@ fn desktop_launch_config(
     if let Some(api_key) = api_key {
         env.insert("SCREENPIPE_LOCAL_API_KEY".to_string(), api_key.to_string());
     }
-    McpLaunchConfig {
-        command: bun_path.to_string_lossy().to_string(),
-        args: vec!["x".to_string(), "screenpipe-mcp@latest".to_string()],
+    Ok(McpLaunchConfig {
+        command: command.to_string_lossy().to_string(),
+        args: entrypoint.map_or_else(
+            || vec!["x".to_string(), "screenpipe-mcp@latest".to_string()],
+            |path| vec![path.to_string_lossy().to_string()],
+        ),
         env,
         transport: (agent.id == "openclaw").then_some("stdio".to_string()),
         server_type: matches!(agent.id, "runner" | "vscode").then_some("stdio".to_string()),
-    }
+    })
 }
 
 fn desktop_mcp_ready(layout: &AgentLayout, launch: &McpLaunchConfig) -> bool {
@@ -768,7 +798,13 @@ impl DesktopAgentReconciler {
                 report.already_connected += 1;
                 continue;
             }
-            let launch = desktop_launch_config(bun_path, api_key, api_url, agent);
+            let launch = match desktop_launch_config(bun_path, api_key, api_url, agent) {
+                Ok(launch) => launch,
+                Err(error) => {
+                    report.failures.push(format!("{}: {error:#}", agent.name));
+                    continue;
+                }
+            };
             let skills_are_ready = match agent.skills_target {
                 Some(target) => layout_in(target, home)
                     .map(|layout| desktop_skills_current(&layout))
@@ -1992,7 +2028,8 @@ mod tests {
                 Some("fixture-key"),
                 "http://localhost:3030",
                 agent,
-            );
+            )
+            .unwrap();
             std::fs::create_dir_all(layout.mcp_path.parent().unwrap()).unwrap();
             std::fs::write(
                 &layout.mcp_path,

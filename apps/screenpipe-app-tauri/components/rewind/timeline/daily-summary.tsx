@@ -109,11 +109,11 @@ export function presentGenerationError(
 	// Quota/rate classification first: a usage-limit body can also mention an
 	// HTTP status, and the auth branch below must not swallow it.
 	const quota = presentQuotaError(error.message);
-	if (quota.kind !== "none") return quota;
+	if (quota.kind !== "none") return { ...quota, upgrade: null };
 	if (/401|403/.test(error.message)) {
 		return {
 			kind: "auth",
-			message: "Your session expired. Sign in again to continue.",
+			message: "Your AI provider rejected the request. Check its credentials in Models & keys.",
 			upgrade: null,
 		};
 	}
@@ -161,7 +161,6 @@ export function TimelineDailySummary({
 	const handledOpenRequestRef = useRef<number | undefined>(undefined);
 	const dateId = format(currentDate, "yyyy-MM-dd");
 	const enhancedAI = settings?.enhancedAI ?? false;
-	const userToken = settings?.user?.token ?? "";
 	const dailySummaryPreset = useMemo(
 		() => pickPipePreset((settings?.aiPresets ?? []) as AIPreset[]),
 		[settings?.aiPresets],
@@ -193,11 +192,7 @@ export function TimelineDailySummary({
 	}, [dateId]);
 
 	const generate = useCallback(
-		async (token = userToken) => {
-			if (!token) {
-				setEnableDialogOpen(true);
-				return;
-			}
+		async () => {
 			if (!dailySummaryPreset) {
 				setPanelOpen(true);
 				setStatus("error");
@@ -230,7 +225,7 @@ export function TimelineDailySummary({
 					date: requestedDate,
 					range,
 					preset: dailySummaryPreset,
-					userToken: token,
+					userToken: null,
 					signal: controller.signal,
 					recoverTransientRuntimeStart: true,
 				});
@@ -268,7 +263,7 @@ export function TimelineDailySummary({
 				const presented = presentGenerationError(generationError);
 				setStatus("error");
 				setError(presented.message);
-				setErrorUpgrade(presented.upgrade);
+				setErrorUpgrade(null);
 				posthog.capture("timeline_daily_summary_failed", {
 					selected_date: dateId,
 					error_kind: presented.kind,
@@ -279,7 +274,7 @@ export function TimelineDailySummary({
 				});
 			}
 		},
-		[currentDate, dailySummaryPreset, dateId, userToken],
+		[currentDate, dailySummaryPreset, dateId],
 	);
 
 	const handleTriggerClick = useCallback(() => {
@@ -300,11 +295,11 @@ export function TimelineDailySummary({
 			return;
 		}
 
-		if (!enhancedAI || !userToken) {
+		if (!enhancedAI) {
 			setEnableDialogOpen(true);
 			posthog.capture("timeline_daily_summary_enable_prompt_opened", {
 				selected_date: dateId,
-				requires_login: !userToken,
+				requires_login: false,
 			});
 			return;
 		}
@@ -315,7 +310,7 @@ export function TimelineDailySummary({
 		}
 
 		void generate();
-	}, [currentDate, dateId, enhancedAI, generate, isGenerating, summary, userToken]);
+	}, [currentDate, dateId, enhancedAI, generate, isGenerating, summary]);
 
 	useEffect(() => {
 		if (
@@ -328,28 +323,14 @@ export function TimelineDailySummary({
 	}, [handleTriggerClick, openRequest]);
 
 	const handleEnableAndGenerate = async () => {
-		if (!userToken) {
-			setEnableDialogOpen(false);
-			await commands.showWindow({ Home: { page: "account" } });
-			return;
-		}
-
 		setIsEnabling(true);
 		try {
 			await updateSettings({ enhancedAI: true });
-			try {
-				const result = await commands.setEnhancedAiSuggestions(true, userToken);
-				if (result.status === "error") console.warn(result.error);
-			} catch (syncError) {
-				// The setting is already persisted. The native suggestion cache will
-				// hydrate again on app launch, so do not block this on-demand request.
-				console.warn("failed to sync Enhanced AI suggestion state", syncError);
-			}
 			posthog.capture("timeline_daily_summary_enhanced_ai_enabled", {
 				selected_date: dateId,
 			});
 			setEnableDialogOpen(false);
-			await generate(userToken);
+			await generate();
 		} catch (enableError) {
 			console.error("failed to enable enhanced AI", enableError);
 			setEnableDialogOpen(false);
@@ -577,46 +558,11 @@ export function TimelineDailySummary({
 											: ui("Couldn’t create summary")}
 									</p>
 									<p className="mt-2 text-sm text-muted-foreground">{error}</p>
-									{errorUpgrade?.resetsAt &&
-										formatAllowanceReset(errorUpgrade.resetsAt) && (
-											<p className="mt-1 text-xs text-muted-foreground">
-												Limit resets{" "}
-												{formatAllowanceReset(errorUpgrade.resetsAt)}.
-											</p>
-										)}
-									<div className="mt-4 flex items-center gap-2">
-										{errorUpgrade ? (
-											<>
-												<Button
-													size="sm"
-													data-testid="daily-summary-upgrade-button"
-													onClick={() =>
-														void openExternalUrl(errorUpgrade.upgradeUrl)
-													}
-												>
-													Upgrade to{" "}
-													{QUOTA_PLAN_LABELS[errorUpgrade.requiredPlan]}
-												</Button>
-												<Button
-													variant="outline"
-													size="sm"
-													onClick={retryGeneration}
-												>
-													<RefreshCw className="mr-2 h-3.5 w-3.5" />
-													Try again
-												</Button>
-											</>
-										) : (
-											<Button
-												variant="outline"
-												size="sm"
-												onClick={retryGeneration}
-											>
-												<RefreshCw className="mr-2 h-3.5 w-3.5" />
-												Try again
-											</Button>
-										)}
-									</div>
+                                    <div className="mt-4 flex items-center gap-2">
+                                      <Button variant="outline" size="sm" onClick={retryGeneration}>
+                                        <RefreshCw className="mr-2 h-3.5 w-3.5" />Try again
+                                      </Button>
+                                    </div>
 								</div>
 							)}
 						</div>
@@ -654,77 +600,22 @@ export function TimelineDailySummary({
 				)}
 			</AnimatePresence>
 
-			<Dialog open={enableDialogOpen} onOpenChange={setEnableDialogOpen}>
-				<DialogContent
-					className="max-w-md"
-					data-testid="daily-summary-enable-dialog"
-				>
-					<DialogHeader>
-						<div className="mb-3 flex h-10 w-10 items-center justify-center border border-foreground bg-foreground text-background">
-							{userToken ? (
-								<Sparkles className="h-5 w-5" />
-							) : (
-								<LogIn className="h-5 w-5" />
-							)}
-						</div>
-						<DialogTitle>
-							{userToken
-								? ui("Turn on enhanced AI?")
-								: ui("Sign in to use daily summaries")}
-						</DialogTitle>
-						<DialogDescription>
-							{userToken
-								? ui("Generate an AI recap of {value1} directly over your timeline.", { value1: dateLabel.toLowerCase() })
-								: ui("Daily summaries use your Screenpipe account and the Screenpipe Cloud auto model.")}
-						</DialogDescription>
-					</DialogHeader>
-
-					{userToken && (
-						<div className="space-y-3 border-y border-border py-4 text-sm">
-							<div className="flex items-start gap-3">
-								<CalendarDays className="mt-0.5 h-4 w-4 shrink-0" />
-								<div>
-									<p className="font-medium">Only when you ask</p>
-									<p className="text-xs text-muted-foreground">
-										Daily summaries never run on a timer or generate
-										automatically.
-									</p>
-								</div>
-							</div>
-							<div className="flex items-start gap-3">
-								<ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
-								<div>
-									<p className="font-medium">Bounded, read-only access</p>
-									<p className="text-xs text-muted-foreground">
-										The AI agent can read only the selected day through local
-										Screenpipe APIs. Relevant evidence is processed by your
-										configured AI model.
-									</p>
-								</div>
-							</div>
-						</div>
-					)}
-
-					<DialogFooter>
-						<Button
-							variant="ghost"
-							onClick={() => setEnableDialogOpen(false)}
-							disabled={isEnabling}
-						>
-							Not now
-						</Button>
-						<Button
-							onClick={() => void handleEnableAndGenerate()}
-							disabled={isEnabling}
-						>
-							{isEnabling ? (
-								<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-							) : null}
-							{userToken ? ui("Turn on and summarize") : ui("Sign in")}
-						</Button>
-					</DialogFooter>
-				</DialogContent>
-			</Dialog>
+            <Dialog open={enableDialogOpen} onOpenChange={setEnableDialogOpen}>
+              <DialogContent className="max-w-md" data-native-timeline-occluder="true">
+                <DialogHeader>
+                  <DialogTitle>Enable daily summaries?</DialogTitle>
+                  <DialogDescription>
+                    Generate a recap of {dateLabel.toLowerCase()} with your configured AI model. The model receives relevant evidence from the selected day only when you ask.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <Button variant="ghost" onClick={() => setEnableDialogOpen(false)} disabled={isEnabling}>Not now</Button>
+                  <Button onClick={() => void handleEnableAndGenerate()} disabled={isEnabling}>
+                    {isEnabling && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Enable and summarize
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 		</>
 	);
 }

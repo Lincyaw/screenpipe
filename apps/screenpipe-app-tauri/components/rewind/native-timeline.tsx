@@ -20,26 +20,23 @@
 // or start a chat itself. Those buttons emit an action over FFI, Rust turns it
 // into a Tauri event, and the bridge is what finally performs it.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import posthog from "posthog-js";
 
 import { commands } from "@/lib/utils/tauri";
-import {
-  ensureApiReady,
-  getApiKey,
-  getApiPort,
-  localFetch,
-} from "@/lib/api";
+import { ensureApiReady, getApiKey, getApiPort, localFetch } from "@/lib/api";
 import { TimelineDailySummary } from "@/components/rewind/timeline/daily-summary";
-import { showChatWithPrefill } from "@/lib/chat-utils";
+
 import { useTimelineStore } from "@/lib/hooks/use-timeline-store";
 import { clearTimelineCache } from "@/lib/hooks/use-timeline-cache";
 import { clearTextCache } from "@/lib/hooks/use-frame-text-data";
 import { toast } from "@/components/ui/use-toast";
 import { useGT } from "gt-react";
+import { MemoryTools } from "@/components/explicit-memory/memory-tools";
+import type { MemoryMark, MemorySource } from "@/lib/explicit-memory";
 
 
 export interface NativeTimelineSelectionContext {
@@ -68,6 +65,11 @@ export interface NativeTimelineDeleteRangeResult {
 export interface NativeTimelineDailySummaryRequest {
   date: string;
   windowLabel?: string;
+}
+
+interface NativeTimelineFrameSelection {
+  windowLabel: string;
+  source: MemorySource | null;
 }
 
 export type NativeTimelineOcclusionMode = "above" | "underlay" | "detached";
@@ -185,9 +187,6 @@ export function NativeTimelineBridge({
       listen("timeline-open-search", () => {
         void commands.openSearchWindow(null, getCurrentWindow().label);
       }),
-      listen("timeline-open-chat", () => {
-        void commands.showWindow("Chat");
-      }),
       listen("timeline-toggle-sidebar", () => {
         onToggleSidebar?.();
       }),
@@ -206,32 +205,6 @@ export function NativeTimelineBridge({
             date,
             id: (request?.id ?? 0) + 1,
           }));
-        },
-      ),
-      listen<NativeTimelineSelectionContext>(
-        "timeline-ask-ai-selection",
-        (event) => {
-          const prefill = buildNativeSelectionChatPrefill(event.payload);
-          if (!prefill) return;
-          void showChatWithPrefill({
-            ...prefill,
-            source: "timeline",
-          })
-            .then(() => {
-              posthog.capture("timeline_selection_to_chat", {
-                selection_duration_ms:
-                  new Date(event.payload.end).getTime() -
-                  new Date(event.payload.start).getTime(),
-                frames_in_selection: event.payload.frameCount,
-                native_timeline: true,
-              });
-            })
-            .catch((error) => {
-              console.error(
-                "failed to open chat for native timeline selection",
-                error,
-              );
-            });
         },
       ),
       listen<NativeTimelineDeleteRangeResult>(
@@ -341,11 +314,13 @@ export function NativeTimelineBridge({
  */
 export function NativeTimeline({
   fallback,
+  active = true,
   transparentHost = false,
   closeOnEscape = false,
   showActivityReturn = false,
 }: {
   fallback: React.ReactNode;
+  active?: boolean;
   transparentHost?: boolean;
   closeOnEscape?: boolean;
   showActivityReturn?: boolean;
@@ -362,6 +337,14 @@ export function NativeTimeline({
   // transparent hole where the timeline should be, which reads as a blank
   // screen, so the React one takes over instead.
   const [attached, setAttached] = useState<boolean | null>(null);
+  const [memorySource, setMemorySource] = useState<MemorySource | null>(null);
+  const [memoryBridgeReady, setMemoryBridgeReady] = useState(false);
+  const memoryNavigationRef = useRef<{
+    frameId: number;
+    resolve(): void;
+    reject(error: Error): void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
   const pendingNavigation = useTimelineStore(
     (state) => state.pendingNavigation,
   );
@@ -374,6 +357,86 @@ export function NativeTimeline({
   showActivityReturnRef.current = showActivityReturn;
   const showNavigationLoadingRef = useRef(nativePendingNavigation !== null);
   showNavigationLoadingRef.current = nativePendingNavigation !== null;
+
+  useEffect(() => {
+    if (!active) {
+      setMemoryBridgeReady(false);
+      setMemorySource(null);
+      const pending = memoryNavigationRef.current;
+      memoryNavigationRef.current = null;
+      if (pending) {
+        clearTimeout(pending.timer);
+        void emit("native-timeline-cancel-source", { windowLabel: getCurrentWindow().label }).catch(() => {});
+        pending.reject(new Error("Timeline is no longer visible."));
+      }
+      return;
+    }
+    let cancelled = false;
+    const label = getCurrentWindow().label;
+    const subscription = listen<NativeTimelineFrameSelection>(
+      "native-timeline-frame-selected",
+      ({ payload }) => {
+        if (cancelled || payload?.windowLabel !== label) return;
+        const candidate = payload.source;
+        const source = candidate && Number.isSafeInteger(candidate.frameId)
+          && candidate.frameId > 0 && Number.isFinite(Date.parse(candidate.timestamp))
+          ? candidate : null;
+        setMemorySource(source);
+        const pending = memoryNavigationRef.current;
+        if (source && pending?.frameId === source.frameId) {
+          memoryNavigationRef.current = null;
+          clearTimeout(pending.timer);
+          pending.resolve();
+        }
+      },
+    );
+    void subscription.then(() => {
+      if (!cancelled) setMemoryBridgeReady(true);
+    }).catch(() => {
+      // Annotation metadata is optional. Keep its source disabled when this
+      // listener fails, but let the core native timeline attach normally.
+      if (!cancelled) {
+        setMemorySource(null);
+        setMemoryBridgeReady(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+      void subscription.then((unlisten) => unlisten()).catch(() => {});
+      const pending = memoryNavigationRef.current;
+      memoryNavigationRef.current = null;
+      if (pending) {
+        clearTimeout(pending.timer);
+        void emit("native-timeline-cancel-source", { windowLabel: label }).catch(() => {});
+        pending.reject(new Error("Timeline was closed."));
+      }
+    };
+  }, [active]);
+
+  const openMemorySource = useCallback((mark: MemoryMark) => {
+    if (!active || mark.frame_id === null) return Promise.reject(new Error("Source unavailable."));
+    const previous = memoryNavigationRef.current;
+    if (previous) return Promise.reject(new Error("A source is already opening."));
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        memoryNavigationRef.current = null;
+        void emit("native-timeline-cancel-source", { windowLabel: getCurrentWindow().label }).catch(() => {});
+        reject(new Error("The exact source frame could not be loaded."));
+      }, 20_000);
+      memoryNavigationRef.current = { frameId: mark.source_frame_id, resolve, reject, timer };
+      void emit("native-timeline-navigate-source", {
+        windowLabel: getCurrentWindow().label,
+        frameId: String(mark.source_frame_id),
+        timestamp: mark.source_timestamp,
+      }).catch(() => {
+        const pending = memoryNavigationRef.current;
+        if (pending?.timer !== timer) return;
+        memoryNavigationRef.current = null;
+        clearTimeout(timer);
+        reject(new Error("Could not open the source."));
+      });
+    });
+  }, [active]);
 
   useEffect(() => {
     if (pendingNavigation) setNativePendingNavigation(pendingNavigation);
@@ -439,7 +502,7 @@ export function NativeTimeline({
 
   useEffect(() => {
     const navigation = nativePendingNavigation;
-    if (available !== true || attached !== true || !navigation) return;
+    if (!active || available !== true || attached !== true || !navigation) return;
 
     const timestamp = navigation.timestamp || null;
     const frameId = navigation.frameId || null;
@@ -487,10 +550,10 @@ export function NativeTimeline({
       cancelled = true;
       for (const timer of timers) window.clearTimeout(timer);
     };
-  }, [attached, available, nativePendingNavigation, setPendingNavigation]);
+  }, [active, attached, available, nativePendingNavigation, setPendingNavigation]);
 
   useEffect(() => {
-    if (!available || !apiReady) return;
+    if (!active || !available || !apiReady || !memoryBridgeReady) return;
     const host = hostRef.current;
     if (!host) return;
 
@@ -500,7 +563,10 @@ export function NativeTimeline({
     // window and the webview underneath it.
     const place = (underlay = false) => {
       const box = host.getBoundingClientRect();
-      if (box.width < 1 || box.height < 1) return;
+      if (box.width < 1 || box.height < 1 || host.getClientRects().length === 0) {
+        void emit("native-timeline-detach", detachPayload);
+        return;
+      }
       void emit("native-timeline-attach", {
         // Which window is asking. Two surfaces show a timeline — the main
         // window's section and the overlay — and each needs its own.
@@ -569,7 +635,9 @@ export function NativeTimeline({
       // whatever the user navigated to.
       void emit("native-timeline-detach", detachPayload);
     };
-  }, [apiReady, available, closeOnEscape, transparentHost]);
+  }, [active, apiReady, available, closeOnEscape, memoryBridgeReady, transparentHost]);
+
+  if (!active) return null;
 
   // Never render nothing. Returning null while the availability check was in
   // flight left the overlay window white, and a check that never resolves left
@@ -584,9 +652,14 @@ export function NativeTimeline({
   // to a React panel such as Daily Summary, otherwise the entire desktop turns
   // into an opaque black rectangle behind that panel.
   return (
-    <div
-      ref={hostRef}
-      className={`h-full w-full ${transparentHost ? "bg-transparent" : "bg-black"}`}
-    />
+    <div className="flex h-full min-h-0 w-full flex-col">
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-b border-border bg-background px-3 py-2 text-foreground">
+        <MemoryTools source={memorySource} onOpenSource={openMemorySource} />
+      </div>
+      <div
+        ref={hostRef}
+        className={`min-h-0 flex-1 ${transparentHost ? "bg-transparent" : "bg-black"}`}
+      />
+    </div>
   );
 }

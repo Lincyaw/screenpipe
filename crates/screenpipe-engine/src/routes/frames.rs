@@ -48,7 +48,7 @@ fn history_forbidden() -> (StatusCode, JsonResponse<Value>) {
     )
 }
 
-async fn require_frame_history_access(
+pub(crate) async fn require_frame_history_access(
     state: &Arc<AppState>,
     frame_id: i64,
 ) -> Result<(), (StatusCode, JsonResponse<Value>)> {
@@ -74,7 +74,7 @@ async fn require_frame_history_access(
     Ok(())
 }
 
-async fn require_image_release(
+pub(crate) async fn require_image_release(
     state: &Arc<AppState>,
     frame_id: i64,
 ) -> Result<(), (StatusCode, JsonResponse<Value>)> {

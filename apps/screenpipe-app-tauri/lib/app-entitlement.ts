@@ -80,6 +80,11 @@ export type AppUser = User & {
 
 export type LocalPlanPolicy = "verified-free" | "verified-paid" | "unknown";
 
+/** Personal source builds expose retained local history independently of billing. */
+export function isLocalHistoryRestricted(): boolean {
+  return false;
+}
+
 export const APP_ENTITLEMENT_MAX_STALE_MS = 72 * 60 * 60 * 1000;
 export const APP_ENTITLEMENT_CLOCK_SKEW_MS = 5 * 60 * 1000;
 export const TOKEN_HYDRATION_GRACE_MS = 60 * 1000;

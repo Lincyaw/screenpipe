@@ -35,6 +35,10 @@ pub(crate) fn should_protect_window(
     label: &str,
     e2e_mode: bool,
 ) -> bool {
+    // Frozen evidence and draft notes must not become another captured source.
+    if label == "annotation-capture" {
+        return true;
+    }
     if e2e_mode {
         return false;
     }

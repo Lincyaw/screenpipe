@@ -878,7 +878,9 @@ impl ServerCore {
         if config.api_auth {
             pipe_manager.set_local_api_key(config.api_auth_key.clone());
         }
-        pipe_manager.install_builtin_pipes().ok();
+        if let Err(error) = pipe_manager.install_summary_pipe() {
+            warn!("could not install the meeting summary conversion: {error}");
+        }
         if let Err(e) = pipe_manager.load_pipes().await {
             warn!("failed to load pipes: {}", e);
         }
@@ -944,9 +946,8 @@ impl ServerCore {
                 },
             ));
         }
-        if let Err(e) = shared_pipe_manager.lock().await.start_scheduler().await {
-            warn!("failed to start pipe scheduler: {}", e);
-        }
+        // The desktop collects context; external agents own task execution.
+        // Do not start schedules left behind by older desktop versions.
 
         // --- HD-recording controller ---
         // One Arc shared between the HTTP server (so the tray menu,
@@ -1390,12 +1391,13 @@ impl ServerCore {
                                 }
                                 Err(e) => {
                                     warn!(
-                                        "couldn't load OPF redactor either ({e}); running \
-                                         text-PII worker in regex-only mode. Switch backend \
-                                         to 'tinfoil' in Settings → Privacy → AI PII removal \
-                                         to use the cloud enclave instead."
+                                        "local AI privacy models are unavailable ({e}); \
+                                         protected text remains pending while recording continues"
                                     );
-                                    Pipeline::regex_only_with_policy(policy.clone())
+                                    // Regex-only output cannot satisfy a model-backed
+                                    // privacy policy. Keep durable captures and defer
+                                    // release until a real local detector is available.
+                                    return;
                                 }
                             }
                         }

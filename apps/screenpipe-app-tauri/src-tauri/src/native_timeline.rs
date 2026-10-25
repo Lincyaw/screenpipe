@@ -185,6 +185,20 @@ pub struct TimelineDeleteRangeResult {
     pub error: Option<String>,
 }
 
+/// A bounded snapshot of the exact device frame whose pixels have loaded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineDisplayedSource {
+    pub frame_id: i64,
+    pub timestamp: String,
+    pub app: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimelineDisplayedSourceChange {
+    pub source: Option<TimelineDisplayedSource>,
+}
+
 /// What the Swift timeline asked the app to do. Parsed from the raw action
 /// string so callers match on a value rather than re-parsing text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +212,7 @@ pub enum TimelineAction {
     OpenRecordingSettings,
     CopyFrame { frame_id: String },
     CopyText,
+    FrameSelected { change: TimelineDisplayedSourceChange },
     AskAiSelection { selection: TimelineSelectionContext },
     ExportVideoSelection { selection: TimelineExportSelection },
     ApplyTag { tag: String },
@@ -261,6 +276,12 @@ impl TimelineAction {
                 frame_id: id.to_string(),
             },
             ("copy_text", _) => Self::CopyText,
+            ("frame_selected", Some(payload)) => {
+                match serde_json::from_str::<TimelineDisplayedSourceChange>(payload) {
+                    Ok(change) => Self::FrameSelected { change },
+                    Err(_) => Self::Unknown { raw: "invalid frame selection".to_string() },
+                }
+            }
             ("ask_ai_selection", Some(payload)) => {
                 match serde_json::from_str::<TimelineSelectionContext>(payload) {
                     Ok(selection) => Self::AskAiSelection { selection },
@@ -342,6 +363,19 @@ pub fn navigate_to_timestamp(timestamp: &str) -> bool {
 
 pub fn navigate_to_frame(frame_id: &str) -> bool {
     ffi::navigate(&serde_json::json!({ "frameId": frame_id }).to_string())
+}
+
+pub fn navigate_to_annotation_source(window_label: &str, frame_id: &str, timestamp: &str) -> bool {
+    ffi::navigate(&serde_json::json!({"windowLabel": window_label, "frameId": frame_id,
+        "timestamp": timestamp, "annotationSource": true}).to_string())
+}
+
+pub fn cancel_annotation_source(window_label: &str) -> bool {
+    ffi::navigate(&serde_json::json!({"windowLabel": window_label, "annotationSourceCancel": true}).to_string())
+}
+
+pub fn request_annotation_source(window_label: &str) -> bool {
+    ffi::navigate(&serde_json::json!({"windowLabel": window_label, "requestSource": true}).to_string())
 }
 
 fn search_results(search_results_json: Option<&str>) -> Vec<serde_json::Value> {

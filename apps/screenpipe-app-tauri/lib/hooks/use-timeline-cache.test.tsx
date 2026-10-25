@@ -145,10 +145,25 @@ describe("timeline cache history access", () => {
     ).toBe(frames);
   });
 
-  it("fails closed for unknown consumer accounts but never restricts enterprise builds", () => {
+  it("opens retained local history for every account and build", () => {
     expect(shouldRestrictTimelineHistory(undefined, true)).toBe(false);
-    expect(shouldRestrictTimelineHistory(undefined, false)).toBe(true);
+    expect(shouldRestrictTimelineHistory(undefined, false)).toBe(false);
+    expect(shouldRestrictTimelineHistory(null, false)).toBe(false);
+    expect(
+      shouldRestrictTimelineHistory({ subscription_plan: "none" } as AppUser, false),
+    ).toBe(false);
     expect(shouldRestrictTimelineHistory(paidUser(nowMs), false)).toBe(false);
+  });
+
+  it("preserves old cached frames without paid account information", async () => {
+    const restricted = shouldRestrictTimelineHistory(undefined, false);
+    await saveFramesToCache([recent, old], new Date(nowMs), restricted);
+    const written = JSON.parse(fs.writeTextFile.mock.calls.at(-1)![1]);
+    expect(written.frames).toEqual([recent, old]);
+    fs.readTextFile.mockResolvedValue(JSON.stringify(written));
+    await expect(loadCachedFrames(restricted)).resolves.toMatchObject({
+      frames: [recent, old],
+    });
   });
 
   it("uses the backend policy when a detached timeline window has no local restriction", async () => {

@@ -35,7 +35,6 @@ import {
   rememberSettingsSection,
   type SettingsSection,
 } from "@/lib/settings-sections";
-import { AccountSection, searchIndex as accountSearchIndex } from "@/components/settings/account-section";
 import ShortcutSection, { searchIndex as shortcutsSearchIndex } from "@/components/settings/shortcut-section";
 import { AIPresets, searchIndex as aiSearchIndex } from "@/components/settings/ai-presets";
 import { AISettings, searchIndex as aiSettingsSearchIndex } from "@/components/settings/ai-settings";
@@ -45,27 +44,16 @@ import {
   screenSearchIndex,
 } from "@/components/settings/recording-settings";
 import GeneralSettings, { searchIndex as generalSearchIndex } from "@/components/settings/general-settings";
-import { TeamSection, searchIndex as teamSearchIndex } from "@/components/settings/team-section";
 import { DisplaySection, searchIndex as displaySearchIndex } from "@/components/settings/display-section";
 import { PrivacySection, searchIndex as privacySearchIndex } from "@/components/settings/privacy-section";
 import { PermissionsSection, searchIndex as permissionsSearchIndex } from "@/components/settings/permissions-section";
 import { StorageSection, searchIndex as storageSearchIndex } from "@/components/settings/storage-section";
 import { NotificationsSettings, searchIndex as notificationsSearchIndex } from "@/components/settings/notifications-settings";
-import { UsageSection, searchIndex as usageSearchIndex } from "@/components/settings/usage-section";
 import { SpeakersSection, searchIndex as speakersSearchIndex } from "@/components/settings/speakers-section";
 import { ActivitiesSettings, searchIndex as activitiesSearchIndex } from "@/components/settings/activities-settings";
 import { searchIndex as powerSearchIndex } from "@/components/settings/battery-saver-section";
-import { ReferralCard } from "@/components/settings/referral-card";
 import { SettingsSearchInput, SettingsSearchPopover, searchSettingsNav, scrollToSettingsField, type IndexedSettingsField, type SettingsField } from "@/components/settings/settings-search";
 import { ExperimentalShortcutGuide } from "@/components/shortcut-guide";
-
-// Settings search index for the inline ReferralSection defined further down in
-// this file. Lives here because the section itself lives here; same co-location
-// principle as the standalone sections.
-const referralSearchIndex: SettingsField[] = [
-  { label: msg("Invite link", {}), keywords: ["invite", "refer", "promo"] },
-  { label: msg("Free month", {}), keywords: ["discount", "earn"] },
-];
 
 /**
  * Aggregate every section's co-located `searchIndex` export into one flat list,
@@ -89,14 +77,10 @@ const ALL_SETTINGS_FIELDS: IndexedSettingsField[] = [
   ...powerSearchIndex.map((f) => ({ ...f, section: "recording" })),
   ...shortcutsSearchIndex.map((f) => ({ ...f, section: "shortcuts" })),
   ...notificationsSearchIndex.map((f) => ({ ...f, section: "notifications" })),
-  ...usageSearchIndex.map((f) => ({ ...f, section: "usage" })),
   ...privacySearchIndex.map((f) => ({ ...f, section: "privacy" })),
   ...permissionsSearchIndex.map((f) => ({ ...f, section: "permissions" })),
   ...storageSearchIndex.map((f) => ({ ...f, section: "storage" })),
   ...speakersSearchIndex.map((f) => ({ ...f, section: "speakers" })),
-  ...teamSearchIndex.map((f) => ({ ...f, section: "team" })),
-  ...accountSearchIndex.map((f) => ({ ...f, section: "account" })),
-  ...referralSearchIndex.map((f) => ({ ...f, section: "referral" })),
 ];
 import { useManagedPolicy } from "@/lib/hooks/use-managed-policy";
 import { usePlatform } from "@/lib/hooks/use-platform";
@@ -114,10 +98,6 @@ import { localizeDefinitions } from "@/lib/i18n/definitions";
  * ordering changes so the split is unambiguous in analysis.
  */
 const NAV_LAYOUT_VERSION = "v2-demand-ordered";
-
-function ReferralSection() {
-  return <ReferralCard />;
-}
 
 function SettingsContent() {
 
@@ -214,16 +194,7 @@ function SettingsContent() {
         { id: "activities" as const, label: gt("Activities"), icon: <ListChecks className="h-4 w-4" /> },
         { id: "ai-settings" as const, label: gt("AI features"), icon: <SlidersHorizontal className="h-4 w-4" /> },
         { id: "ai" as const, label: gt("Models & keys"), icon: <Brain className="h-4 w-4" /> },
-        { id: "usage" as const, label: gt("AI credits"), icon: <BarChart3 className="h-4 w-4" /> },
       ].filter((s) => !isSettingsSectionHidden(s.id)),
-    },
-    {
-      label: gt("Account"),
-      items: [
-        { id: "account" as const, label: gt("Account"), icon: <User className="h-4 w-4" /> },
-        { id: "team" as const, label: gt("Team"), icon: <Users className="h-4 w-4" /> },
-        { id: "referral" as const, label: gt("Refer a friend"), icon: <Gift className="h-4 w-4" /> },
-      ].filter((s) => !isSectionHidden(s.id)),
     },
     {
       label: gt("App"),
@@ -351,17 +322,13 @@ function SettingsContent() {
       case "ai":            return <AIPresets />;
       case "ai-settings":   return <AISettings />;
       case "activities":    return <ActivitiesSettings />;
-      case "account":       return <AccountSection />;
       case "recording":     return <RecordingSettings section="screen" />;
       case "audio":         return <RecordingSettings section="audio" />;
       case "shortcuts":     return <ShortcutSection />;
       case "privacy":       return <PrivacySection />;
       case "permissions":   return showPermissions ? <PermissionsSection /> : null;
       case "storage":       return <StorageSection />;
-      case "team":          return <TeamSection />;
       case "notifications": return <NotificationsSettings />;
-      case "referral":      return <ReferralSection />;
-      case "usage":         return <UsageSection />;
       case "speakers":      return <SpeakersSection />;
     }
   };

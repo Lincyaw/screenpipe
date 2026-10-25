@@ -1960,7 +1960,7 @@ const STORE_MAGIC: &[u8; 8] = b"SPSTORE1";
 /// the `SPSTORE1` magic prefix. Keeps `resolve_preset` and `pipe models list`
 /// in agreement on encrypted stores; before this helper the runner did a plain
 /// `read_to_string` and silently failed when the file was encrypted.
-fn read_store_bin(path: &Path) -> Option<serde_json::Value> {
+pub(crate) fn read_store_bin(path: &Path) -> Option<serde_json::Value> {
     let data = std::fs::read(path).ok()?;
     if data.len() >= STORE_MAGIC.len() && &data[..STORE_MAGIC.len()] == STORE_MAGIC {
         #[cfg(feature = "secrets")]
@@ -6128,6 +6128,11 @@ impl PipeManager {
         self.scheduled_run_context = Some(resolver);
     }
 
+    /// Whether scheduled and event-triggered conversions can actually run.
+    pub fn scheduler_is_running(&self) -> bool {
+        self.scheduler_handle.as_ref().is_some_and(|handle| !handle.is_finished())
+    }
+
     /// Start the background scheduler.  Spawns a tokio task that checks
     /// pipe schedules and runs them when due.
     pub async fn start_scheduler(&mut self) -> Result<()> {
@@ -7794,11 +7799,25 @@ impl PipeManager {
                 warn!("could not install starter skills: {error}");
             }
         }
+        self.install_builtin_pipe_names(None)
+    }
+
+    /// Keep the desktop's on-demand meeting conversion available without
+    /// installing agent workflows or re-enabling a deleted template.
+    pub fn install_summary_pipe(&self) -> Result<()> {
+        self.install_builtin_pipe_names(Some(&["meeting-summary"]))
+    }
+
+    fn install_builtin_pipe_names(&self, names: Option<&[&str]>) -> Result<()> {
         // Manual pipes are bundled as templates. Scheduled pipes (idea-tracker,
         // obsidian-sync) are available from the pipe store instead.
         let tombstones = read_tombstones(&self.pipes_dir);
 
         for &(name, content) in BUNDLED_BUILTIN_PIPES {
+            if names.is_some_and(|names| !names.contains(&name)) {
+                continue;
+            }
+
             let dir = self.pipes_dir.join(name);
             let pipe_md = dir.join("pipe.md");
             if !pipe_md.exists() {
@@ -10706,6 +10725,22 @@ mod tests {
             "custom prompt"
         );
         assert!(!read_tombstones(dir.path()).contains_key("time-breakdown"));
+    }
+
+    #[tokio::test]
+    async fn summary_only_install_retains_conversion_and_respects_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = PipeManager::new(dir.path().to_path_buf(), HashMap::new(), None, 0);
+        manager.install_summary_pipe().unwrap();
+        assert!(!manager.scheduler_is_running());
+        manager.load_pipes().await.unwrap();
+        assert!(manager.get_pipe("meeting-summary").await.is_some());
+        assert_eq!(manager.list_pipes().await.len(), 1);
+        assert!(!dir.path().join("workflow-discover").exists());
+        std::fs::remove_file(dir.path().join("meeting-summary/pipe.md")).unwrap();
+        add_tombstone(dir.path(), "meeting-summary", None).unwrap();
+        manager.install_summary_pipe().unwrap();
+        assert!(!dir.path().join("meeting-summary/pipe.md").exists());
     }
 
     #[tokio::test]

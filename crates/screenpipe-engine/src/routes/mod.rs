@@ -4,6 +4,7 @@
 
 pub mod activity_ledger;
 pub mod activity_summary;
+pub(crate) mod agent_sessions;
 pub mod ai_feedback;
 pub mod artifacts;
 pub mod audio;
@@ -16,6 +17,8 @@ pub mod content;
 pub mod data;
 pub mod data_sync_proxy;
 pub mod elements;
+pub(crate) mod explicit_memory;
+pub(crate) mod hierarchical_memory;
 pub mod frames;
 pub mod health;
 pub mod internal_telemetry;

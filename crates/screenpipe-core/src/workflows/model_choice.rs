@@ -2,7 +2,7 @@
 // https://screenpipe.com
 
 //! One persisted choice for interactive and scheduled Workflows AI.
-use crate::pipes::{resolve_exact_preset, ResolvedPreset};
+use crate::pipes::{read_store_bin, resolve_exact_preset, ResolvedPreset};
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
@@ -14,45 +14,64 @@ fn read_provider(base: &Path) -> Result<ResolvedPreset> {
     let text = match std::fs::read_to_string(base.join("workflows-model.json")) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            "{\"mode\":\"intelligent\"}".into()
+            "{\"mode\":\"default\"}".into()
         }
         Err(error) => return Err(error.into()),
     };
     let value: serde_json::Value = serde_json::from_str(&text)?;
-    let model = match value["mode"].as_str() {
-        Some("intelligent") => "auto",
-        Some("private") => PRIVATE_MODEL,
+    let preset = match value["mode"].as_str() {
+        // Retired hosted modes inherit the user's configured provider. Never
+        // recreate a cloud preset or require a Screenpipe account session.
+        Some("default" | "intelligent" | "private") => {
+            let store = read_store_bin(&base.join("store.bin"))
+                .context("Choose a local model or your own AI provider in Settings.")?;
+            let presets = store["settings"]["aiPresets"]
+                .as_array()
+                .context("No AI provider is configured. Choose one in Settings.")?;
+            let compatible =
+                |preset: &&serde_json::Value| preset["provider"].as_str() != Some("acp");
+            let selected = presets
+                .iter()
+                .filter(compatible)
+                .find(|preset| preset["defaultPreset"].as_bool() == Some(true))
+                .or_else(|| {
+                    presets
+                        .iter()
+                        .filter(compatible)
+                        .find(|preset| preset["id"].as_str() == Some("pipes"))
+                })
+                .or_else(|| presets.iter().find(|preset| compatible(preset)))
+                .and_then(|preset| preset["id"].as_str())
+                .context("No compatible AI provider is configured for Workflows.")?;
+            resolve_exact_preset(&base.join("pipes"), selected)
+                .context("Your configured Workflows AI provider is unavailable.")?
+        }
         Some(mode) if mode.starts_with("preset:") && !mode[7..].trim().is_empty() => {
-            let preset = resolve_exact_preset(&base.join("pipes"), &mode[7..])
-                .context("Your Workflows AI preset is unavailable. Choose an AI preset again.")?;
-            if preset.model.trim().is_empty()
-                || !matches!(
-                    preset.provider.as_deref(),
-                    Some(
-                        "screenpipe"
-                            | "openai"
-                            | "openai-chatgpt"
-                            | "anthropic"
-                            | "custom"
-                            | "ollama"
-                    )
-                )
-            {
-                bail!("Your Workflows AI preset is unsupported. Choose an AI preset again.");
-            }
-            return Ok(preset);
+            resolve_exact_preset(&base.join("pipes"), &mode[7..])
+                .context("Your Workflows AI preset is unavailable. Choose an AI preset again.")?
         }
         _ => bail!("The saved Workflows AI choice is invalid. Choose an AI preset again."),
     };
-    Ok(ResolvedPreset {
-        model: model.into(),
-        provider: Some("screenpipe".into()),
-        url: None,
-        api_key: None,
-        prompt: None,
-        executor: None,
-        executor_config: None,
-    })
+    let retired_gateway = preset
+        .url
+        .as_deref()
+        .and_then(|url| reqwest::Url::parse(url).ok())
+        .and_then(|url| url.host_str().map(str::to_lowercase))
+        .is_some_and(|host| {
+            ["screenpipe.com", "screenpi.pe"]
+                .iter()
+                .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+        });
+    if preset.model.trim().is_empty()
+        || retired_gateway
+        || !matches!(
+            preset.provider.as_deref(),
+            Some("openai" | "openai-chatgpt" | "anthropic" | "custom" | "ollama")
+        )
+    {
+        bail!("Choose a local model or your own AI provider for Workflows in Settings.");
+    }
+    Ok(preset)
 }
 
 #[cfg(test)]

@@ -33,6 +33,8 @@ import {
 import { discoverTeamConfig } from "./team-config";
 import { teamFrameContent, teamFramePath } from "./team-frame";
 import { WORKFLOW_TOOLS, readWorkflowTool, frameAutomationContent } from "./workflow-tools";
+import { AGENT_SESSION_TOOLS, readAgentSessionTool } from "./agent-session-tools";
+import { MEMORY_TOOLS, isMemoryTool, readMemoryTool } from "./memory-tools";
 import { PKG_VERSION } from "./version";
 import { BUNDLED_SKILLS_TOOL, readBundledSkills } from "./bundled-skills";
 import { formatForElementPurpose } from "./element-format";
@@ -325,7 +327,9 @@ const server = new Server(
 // Tools
 // ---------------------------------------------------------------------------
 const TOOLS: Tool[] = [
+  ...MEMORY_TOOLS,
   ...WORKFLOW_TOOLS,
+  ...AGENT_SESSION_TOOLS,
   BUNDLED_SKILLS_TOOL,
   {
     name: "search-content",
@@ -1417,6 +1421,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => observeCall(r
   const { name, arguments: args } = request.params;
 
   if (name === BUNDLED_SKILLS_TOOL.name) return readBundledSkills(args);
+  if (isMemoryTool(name)) return readMemoryTool(name, args, fetchAPI);
 
   if (!args) {
     throw Object.assign(new Error("Missing arguments"), { status: 400 });
@@ -2276,6 +2281,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => observeCall(r
           content: [{ type: "text", text: `Results: ${results.length}\n\n${formatted.join("\n---\n")}` }],
         };
       }
+
+      case "search-agent-sessions":
+      case "read-agent-session":
+        return await readAgentSessionTool(name, args, callAPI);
 
       case "list-workflows":
       case "get-workflow":

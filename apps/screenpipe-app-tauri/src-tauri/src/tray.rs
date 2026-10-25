@@ -1518,13 +1518,8 @@ fn create_dynamic_menu(
         return menu_builder.build().map_err(Into::into);
     }
 
-    if data.workflows_mode && !data.app_ui_hidden {
-        return create_workflows_menu(app, data);
-    }
-
     let show_shortcut = &data.show_shortcut;
     let search_shortcut = &data.search_shortcut;
-    let chat_shortcut = &data.chat_shortcut;
 
     // --- Open screenpipe ---
     if !data.app_ui_hidden {
@@ -1535,12 +1530,11 @@ fn create_dynamic_menu(
 
     // --- Primary actions (most-used first) ---
     // Use native accelerators for right-aligned shortcut display (like Notion Calendar)
-    if !data.app_ui_hidden && !is_tray_item_hidden("tray_chat") {
-        let mut item = MenuItemBuilder::with_id("show_chat", ui_text("Chat"));
-        if !chat_shortcut.is_empty() {
-            item = item.accelerator(&to_accelerator(chat_shortcut));
-        }
-        menu_builder = menu_builder.item(&item.build(app)?);
+    #[cfg(target_os = "macos")]
+    if !data.app_ui_hidden {
+        menu_builder = menu_builder.item(
+            &MenuItemBuilder::with_id("capture_annotate", "Capture and annotate").build(app)?,
+        );
     }
     if !data.app_ui_hidden && !is_tray_item_hidden("tray_search") {
         let mut item = MenuItemBuilder::with_id("show_search", ui_text("Search"));
@@ -1662,27 +1656,6 @@ fn create_dynamic_menu(
     if effective_status == RecordingStatus::Error && data.has_permission_issue {
         menu_builder = menu_builder
             .item(&MenuItemBuilder::with_id("fix_permissions", ui_text("⚠ Fix permissions")).build(app)?);
-    }
-
-    // --- Plan / usage info ---
-    if !data.app_ui_hidden && !is_tray_item_hidden("tray_plan") {
-        let plan_label = plan_display_name(data.subscription_plan.as_deref());
-        let has_cloud = data.cloud_subscribed;
-        menu_builder = menu_builder.item(&PredefinedMenuItem::separator(app)?);
-        menu_builder = menu_builder.item(
-            &MenuItemBuilder::with_id("plan_info", ui_format("{plan} plan", &[("plan", plan_label.to_string())]))
-                .enabled(false)
-                .build(app)?,
-        );
-        // Anyone without cloud (Free, Basic, or Lifetime-only) can move up to
-        // Business to add cloud sync, cloud AI, and integrations. Plan truth is
-        // also checked: `cloud_subscribed` is a persisted flag that can lag
-        // behind the entitlement, and offering "Upgrade to Business" beside
-        // "Business Ultra plan" reads as a bug to the person paying for Ultra.
-        if !has_cloud && !plan_includes_business(data.subscription_plan.as_deref()) {
-            menu_builder = menu_builder
-                .item(&MenuItemBuilder::with_id("upgrade", ui_text("⚡ Upgrade to Business")).build(app)?);
-        }
     }
 
     // --- Update item (if available) ---
@@ -1809,6 +1782,12 @@ fn create_workflows_menu(app: &AppHandle, data: &TrayMenuData) -> Result<tauri::
     let mut menu = MenuBuilder::new(app)
         .item(&MenuItemBuilder::with_id("open_app", ui_text("Open Screenpipe")).build(app)?)
         .item(&PredefinedMenuItem::separator(app)?);
+    #[cfg(target_os = "macos")]
+    if !data.app_ui_hidden {
+        menu = menu.item(
+            &MenuItemBuilder::with_id("capture_annotate", "Capture and annotate").build(app)?,
+        );
+    }
     if !is_tray_item_hidden("tray_recording_controls") {
         let status = get_effective_recording_status();
         let recording = status == RecordingStatus::Recording && !data.all_capture_disabled;
@@ -2019,6 +1998,7 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
         && matches!(
             event.id().as_ref(),
             "show"
+                | "capture_annotate"
                 | "show_search"
                 | "show_chat"
                 | "open_app"
@@ -2037,6 +2017,18 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
     track_tray_menu_item_clicked(app_handle, event.id().as_ref());
 
     match event.id().as_ref() {
+        "capture_annotate" => {
+            let app = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                // Let the native menu close before asking the existing writer
+                // for fresh pixels; the annotation UI itself opens after ACK.
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    crate::annotation_capture::start(&handle);
+                });
+            });
+        }
         "show" => {
             let app = app_handle.clone();
             let _ = app_handle.run_on_main_thread(move || {
@@ -2318,17 +2310,6 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
                 let _ = ShowRewindWindow::PermissionRecovery.show(&app);
             });
         }
-        "upgrade" => {
-            let app = app_handle.clone();
-            let _ = app_handle.run_on_main_thread(move || {
-                crate::headless::wake_from_tray(&app);
-                let _ = ShowRewindWindow::Home {
-                    page: Some("account".to_string()),
-                }
-                .show(&app);
-                let _ = app.emit("tray-upgrade", ());
-            });
-        }
         "releases" => {
             let app = app_handle.clone();
             let _ = app_handle.run_on_main_thread(move || {
@@ -2402,14 +2383,7 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
                 let _ = ShowRewindWindow::Home { page }.show(&app);
             });
         }
-        "book_call" => {
-            let app = app_handle.clone();
-            let _ = app_handle.run_on_main_thread(move || {
-                let _ = app
-                    .opener()
-                    .open_url("https://cal.com/team/screenpipe/chat", None::<&str>);
-            });
-        }
+
         "onboarding" => {
             let app = app_handle.clone();
             let _ = app_handle.run_on_main_thread(move || {

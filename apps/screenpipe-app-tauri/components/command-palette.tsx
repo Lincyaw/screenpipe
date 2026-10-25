@@ -5,48 +5,15 @@
 
 import React, { useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import {
-  Brain,
-  CalendarClock,
-  History,
-  Keyboard,
-  ListTree,
-  MessageSquare,
-  MonitorPlay,
-  PanelLeft,
-  Pause,
-  Play,
-  Plug,
-  Plus,
-  Search,
-  Settings as SettingsIcon,
-  TimerReset,
-} from "lucide-react";
-import {
-  CommandDialog,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-  CommandSeparator,
-  CommandShortcut,
-} from "@/components/ui/command";
+import { Brain, CalendarClock, Keyboard, ListTree, MessageSquare, MonitorPlay, PanelLeft, Pause, Play, Plug, Search, Settings as SettingsIcon, TimerReset } from "lucide-react";
+import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "@/components/ui/command";
 import { ShortcutKeycap } from "@/components/shortcut-keycap";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { usePlatform } from "@/lib/hooks/use-platform";
 import { useEventListener } from "@/lib/hooks/use-event-listener";
 import type { SidebarNavId } from "@/lib/utils/sidebar-nav-layout";
-import {
-  commandPalette,
-  type CommandPaletteActionId,
-} from "@/lib/analytics/command-palette";
-import {
-  globalShortcutHint,
-  inAppShortcutLabel,
-  matchesInAppShortcut,
-  type ShortcutHintSettings,
-} from "@/lib/shortcuts";
+import { commandPalette, type CommandPaletteActionId } from "@/lib/analytics/command-palette";
+import { globalShortcutHint, inAppShortcutLabel, matchesInAppShortcut, type ShortcutHintSettings } from "@/lib/shortcuts";
 import { useGT } from "gt-react";
 
 
@@ -66,10 +33,8 @@ export interface CommandPaletteSection {
 export interface CommandPaletteDeps {
   openSearch: () => void;
   openTimelineOverlay: () => void;
-  newChat: () => void;
   pauseRecording: () => void;
   resumeRecording: () => void;
-  switchRecentChat: (direction: 1 | -1) => void;
   goToSection: (id: SidebarNavId) => void;
   toggleSidebar: () => void;
   openShortcutGuide: () => void;
@@ -141,15 +106,6 @@ export function buildPaletteEntries(
           },
         ]),
     {
-      id: "new_chat",
-      label: "New chat",
-      keywords: "compose ask ai conversation",
-      group: "actions",
-      hint: inAppShortcutLabel("new_chat", isMac),
-      icon: Plus,
-      run: deps.newChat,
-    },
-    {
       id: "pause_recording",
       label: "Pause recording",
       keywords: "stop capture privacy",
@@ -167,28 +123,6 @@ export function buildPaletteEntries(
       icon: Play,
       run: deps.resumeRecording,
     },
-    ...(experimentalFeaturesEnabled
-      ? [
-          {
-            id: "next_recent_chat" as const,
-            label: "Next chat tab",
-            keywords: "conversation previous recent mru cycle tab worktree",
-            group: "navigation" as const,
-            hint: inAppShortcutLabel("next_recent_chat", isMac),
-            icon: History,
-            run: () => deps.switchRecentChat(1),
-          },
-          {
-            id: "previous_recent_chat" as const,
-            label: "Previous chat tab",
-            keywords: "conversation previous recent mru reverse tab worktree",
-            group: "navigation" as const,
-            hint: inAppShortcutLabel("previous_recent_chat", isMac),
-            icon: History,
-            run: () => deps.switchRecentChat(-1),
-          },
-        ]
-      : []),
     ...deps.sections.map((section) => ({
       id: SECTION_ACTION_IDS[section.id],
       label: section.label,

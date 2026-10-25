@@ -13,12 +13,6 @@ import type { ChatComposerProps } from "@/components/chat/standalone/composer-ty
 import { DropOverlay } from "@/components/chat/standalone/drop-overlay";
 import { PrefillContextBanner } from "@/components/chat/standalone/prefill-context-banner";
 import { QueuedPromptsList } from "@/components/chat/standalone/queued-prompts-list";
-import { UpgradeQuotaBanner } from "@/components/chat/standalone/upgrade-quota-banner";
-import {
-  FreePlanCounterChip,
-  FreePlanWallStrip,
-  FreeUpgradeSheet,
-} from "@/components/chat/standalone/free-plan-wall";
 import { getComposerPrimaryAction } from "@/lib/chat-queue-controls";
 
 const CHAT_RAIL_CLASS = "max-w-4xl mx-auto w-full";
@@ -88,9 +82,6 @@ export function ChatComposer({
             isDragging={input.isDragging}
           />
 
-          <UpgradeQuotaBanner activePreset={modelControls.activePreset} />
-          <FreePlanWallStrip />
-          <FreeUpgradeSheet />
 
           <QueuedPromptsList
             queuedPrompts={queue.queuedPrompts}
@@ -104,7 +95,7 @@ export function ChatComposer({
 
           <ComposerInputBox input={input} mentions={mentions} />
 
-          <FreePlanCounterChip />
+
 
           <ComposerControlsRow
             canChat={input.canChat}

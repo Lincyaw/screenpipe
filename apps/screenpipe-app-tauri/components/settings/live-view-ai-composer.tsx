@@ -289,7 +289,7 @@ export function LiveViewAiComposer({
             }
             compact
             showModelOnly
-            showLoginCta
+            showLoginCta={false}
             containerClassName="w-auto min-w-36"
             triggerClassName="h-8 rounded-md"
           />
@@ -312,7 +312,7 @@ export function LiveViewAiComposer({
               }
               compact
               showModelOnly
-              showLoginCta
+              showLoginCta={false}
               containerClassName="w-auto min-w-36"
               triggerClassName="h-8 rounded-md"
             />

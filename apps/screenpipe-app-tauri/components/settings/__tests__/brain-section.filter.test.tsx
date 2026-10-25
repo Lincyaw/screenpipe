@@ -286,7 +286,7 @@ describe("BrainSection type filter", () => {
     });
 
     openBrainViewMenu();
-    expect(screen.getByTestId("brain-filter-overview")).toHaveTextContent("Live Views3");
+    expect(screen.queryByTestId("brain-filter-overview")).toBeNull();
     expect(screen.getByTestId("brain-filter-memories")).toHaveTextContent("Memories8");
     expect(screen.getByTestId("brain-filter-artifacts")).toHaveTextContent("Artifacts5");
   });
@@ -315,20 +315,6 @@ describe("BrainSection type filter", () => {
       "Switch Brain view, current: Artifacts",
     );
 
-    selectBrainView("overview");
-    await waitFor(() =>
-      expect(screen.getByTestId("brain-view-switcher")).toHaveAttribute(
-        "aria-label",
-        "Switch Brain view, current: Live Views",
-      ),
-    );
-    const dashboardRow = screen.getByTestId("overview-dashboard-row");
-    const overviewSwitcher = within(dashboardRow).getByTestId(
-      "brain-view-switcher",
-    );
-    expect(overviewSwitcher).not.toHaveTextContent("Live Views");
-    expect(overviewSwitcher.querySelector("svg")).not.toBeNull();
-
     selectBrainView("memories");
     await waitFor(() => expect(memoryRows().length).toBe(8));
     expect(screen.getByTestId("brain-view-switcher")).toHaveAttribute(
@@ -337,26 +323,10 @@ describe("BrainSection type filter", () => {
     );
   });
 
-  it("keeps the stale warning specific to memories", async () => {
-    const now = vi
-      .spyOn(Date, "now")
-      .mockReturnValue(new Date("2026-07-14T00:00:00Z").getTime());
-
-    try {
-      render(<BrainSection />);
-
-      await waitFor(() => {
-        expect(screen.getByText(/memories haven't updated in/i)).toBeTruthy();
-        expect(
-          screen.getByText(
-            /check that a memory-writing scheduled task is installed and enabled/i,
-          ),
-        ).toBeTruthy();
-      });
-      expect(screen.queryByText(/artifact-writing/)).toBeNull();
-    } finally {
-      now.mockRestore();
-    }
+  it("does not suggest retired task automation", async () => {
+    render(<BrainSection />);
+    await waitFor(() => expect(memoryRows().length).toBe(8));
+    expect(screen.queryByText(/Browse scheduled tasks/i)).toBeNull();
   });
 
   it("previews a pipe's HTML artifact in a frame that cannot load remote images", async () => {
@@ -652,53 +622,18 @@ describe("BrainSection type filter", () => {
     await waitFor(() => expect(screen.getByTestId("brain-detail-panel")).toBeTruthy());
   });
 
-  it("opens an editable chat with the artifact preview and does not auto-send", async () => {
+  it("opens the saved artifact as data without internal chat actions", async () => {
     render(<BrainSection />);
     await waitFor(() => expect(memoryRows().length).toBe(8));
-
     selectBrainView("artifacts");
     await waitFor(() => expect(artifactRows().length).toBe(5));
     fireEvent.click(screen.getByTestId("brain-item-artifact-100"));
-    fireEvent.click(screen.getByTestId("brain-detail-ask-ai"));
-
-    await waitFor(() => {
-      expect(chatMocks.showChatWithPrefill).toHaveBeenCalledWith({
-        context: "",
-        prompt: `help me understand the Screenpipe artifact at ${ARTIFACTS[0].path}`,
-        autoSend: false,
-        source: "brain-artifact",
-        useHomeChat: true,
-        filePreviewPath: ARTIFACTS[0].path,
-      });
-    });
-  });
-
-  it("jumps to the origin chat only from the detail panel action", async () => {
-    render(<BrainSection />);
-    await waitFor(() => expect(memoryRows().length).toBe(8));
-
-    selectBrainView("artifacts");
-    await waitFor(() => expect(artifactRows().length).toBe(5));
-
-    fireEvent.click(screen.getByTestId("brain-item-artifact-100"));
-
+    expect(screen.getByTestId("brain-detail-panel")).toBeTruthy();
+    expect(screen.queryByTestId("brain-detail-ask-ai")).toBeNull();
+    expect(chatMocks.showChatWithPrefill).not.toHaveBeenCalled();
     openDetailMenu();
-    fireEvent.click(await screen.findByText("Go to chat"));
-
-    expect(emit).toHaveBeenCalledWith("chat-load-conversation", {
-      conversationId: "chat-b",
-      targetWindow: "home",
-      filePreviewPath: "/tmp/pipes/glob-pipe/output/note-0.md",
-    });
-    expect(analyticsMocks.capture).toHaveBeenCalledWith(
-      "brain_artifact_opened",
-      {
-        artifact_kind: "markdown",
-        open_mode: "chat",
-        registered: true,
-        surface: "detail",
-      },
-    );
+    expect(screen.queryByText("Go to chat")).toBeNull();
+    expect(screen.queryByText("Go to task run")).toBeNull();
   });
 
   it("closes the artifact detail panel and keeps the list", async () => {

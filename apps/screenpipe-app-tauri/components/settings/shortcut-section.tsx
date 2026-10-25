@@ -42,6 +42,7 @@ const ShortcutSection = () => {
       "showChatShortcut",
       "searchShortcut",
       "starSessionShortcut",
+      "captureAnnotateShortcut",
     ] as const;
     return (
       keys.every((k) => settings[k] === defaults[k]) &&
@@ -63,6 +64,7 @@ const ShortcutSection = () => {
         searchShortcut: defaults.searchShortcut,
         lockVaultShortcut: defaults.lockVaultShortcut,
         starSessionShortcut: defaults.starSessionShortcut,
+        captureAnnotateShortcut: defaults.captureAnnotateShortcut,
         disabledShortcuts: [],
       });
 
@@ -97,7 +99,7 @@ const ShortcutSection = () => {
   const globalShortcutRows = (
     <>
       <ShortcutRow type="global" shortcut="showScreenpipeShortcut" title={ui("Toggle screenpipe overlay")} description={ui("Show/hide the main interface")} value={settings.showScreenpipeShortcut} />
-      <ShortcutRow type="global" shortcut="showChatShortcut" title={ui("Toggle AI chat")} description={ui("Show/hide the AI chat window")} value={settings.showChatShortcut} />
+      <ShortcutRow type="global" shortcut="captureAnnotateShortcut" title="Capture and annotate" description="Freeze the screen under your pointer, select a region, and save a note" value={settings.captureAnnotateShortcut || ""} />
       <ShortcutRow type="global" shortcut="starSessionShortcut" title={ui("Star a work session")} description={ui("Choose a duration or edit a saved session")} value={settings.starSessionShortcut || ""} />
       <ShortcutRow type="global" shortcut="searchShortcut" title={ui("Open search")} description={ui("Open search when overlay is visible")} value={settings.searchShortcut} />
       <ShortcutRow type="global" shortcut="startRecordingShortcut" title={ui("Start recording")} description={ui("Start screen recording")} value={settings.startRecordingShortcut} />
@@ -138,7 +140,7 @@ const ShortcutSection = () => {
             <span className="text-[10px] text-muted-foreground">Fixed</span>
           </div>
           <div className="divide-y divide-border border border-border">
-            {localizeDefinitions(IN_APP_SHORTCUTS, uiMessages).map((item) => (
+            {localizeDefinitions(IN_APP_SHORTCUTS, uiMessages).filter(item => item.section !== "chat" && !["next_recent_chat", "previous_recent_chat"].includes(item.id)).map((item) => (
               <div
                 key={item.id}
                 className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-3 py-2.5"

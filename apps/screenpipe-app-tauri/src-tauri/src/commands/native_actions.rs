@@ -144,6 +144,30 @@ fn install_native_timeline_placement(app_handle: &tauri::AppHandle) {
         );
     });
 
+    app_handle.listen("native-timeline-cancel-source", move |event| {
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) else { return; };
+        if let Some(label) = payload.get("windowLabel").and_then(|value| value.as_str()) {
+            crate::native_timeline::cancel_annotation_source(label);
+        }
+    });
+    app_handle.listen("native-timeline-request-frame", move |event| {
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) else { return; };
+        if let Some(label) = payload.get("windowLabel").and_then(|value| value.as_str()) {
+            crate::native_timeline::request_annotation_source(label);
+        }
+    });
+    app_handle.listen("native-timeline-navigate-source", move |event| {
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) else { return; };
+        let (Some(label), Some(frame_id), Some(timestamp)) = (
+            payload.get("windowLabel").and_then(|value| value.as_str()),
+            payload.get("frameId").and_then(|value| value.as_str()),
+            payload.get("timestamp").and_then(|value| value.as_str()),
+        ) else { return; };
+        if frame_id.parse::<i64>().is_ok_and(|id| id > 0) && chrono::DateTime::parse_from_rfc3339(timestamp).is_ok() {
+            crate::native_timeline::navigate_to_annotation_source(label, frame_id, timestamp);
+        }
+    });
+
     let detach_handle = app_handle.clone();
     app_handle.listen("native-timeline-detach", move |event| {
         let payload = serde_json::from_str::<serde_json::Value>(event.payload())
@@ -242,6 +266,12 @@ fn native_timeline_action_callback_inner(action_ptr: *const std::os::raw::c_char
         }
         TimelineAction::CopyText => {
             let _ = app.emit("timeline-copy-text", ());
+        }
+        TimelineAction::FrameSelected { change } => {
+            if let Some(label) = target.as_deref() {
+                emit_timeline_event(&app, Some(label), "native-timeline-frame-selected",
+                    serde_json::json!({"windowLabel": label, "source": change.source}));
+            }
         }
         TimelineAction::AskAiSelection { selection } => {
             emit_timeline_event(
@@ -1128,43 +1158,15 @@ pub(crate) fn dispatch_notification_action(json: String) {
         return;
     }
 
-    // Chat-opening actions ("chat", and "pipe" with open_in_chat) and
-    // background pipe runs are handled in Rust for the same reason as
-    // link/deeplink above: their JS listener lives in the Main overlay
-    // webview, which is usually not mounted when a native notification is
-    // clicked — the click silently did nothing ("open in chat does nothing").
+    // Old notifications may still contain conversation or task actions. Open
+    // the data viewer rather than dispatching a retired execution surface.
     if action_type == Some("chat") || action_type == Some("pipe") {
-        if let Some(action) = parsed.as_ref() {
-            // Mirrors the `notification_action` capture the JS handler did
-            // when it (sometimes) received these events.
-            let track = |app: &tauri::AppHandle| {
-                track_native_overlay_event(
-                    app,
-                    "notification_action",
-                    serde_json::json!({ "action_type": action_type }),
-                );
-            };
-            if let Some(prefill) = chat_prefill_payload_from_action(action) {
-                track(app);
-                open_chat_with_prefill(app.clone(), prefill);
-                return;
-            }
-            if action_type == Some("pipe")
-                && action.get("open_in_chat").and_then(|v| v.as_bool()) != Some(true)
-            {
-                if let Some(pipe) = action.get("pipe").and_then(|v| v.as_str()) {
-                    track(app);
-                    run_pipe_from_notification(
-                        app.clone(),
-                        pipe.to_string(),
-                        action.get("context").cloned(),
-                    );
-                    return;
-                }
-            }
-        }
-        // Unusable payload (e.g. a pipe action without a pipe name) — fall
-        // through to the JS handler like before.
+        let app_for_show = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let _ = (ShowRewindWindow::Home { page: Some("home".to_string()) })
+                .show(&app_for_show);
+        });
+        return;
     }
 
     // Everything else (mute, dismiss, auto_dismiss, legacy string actions)

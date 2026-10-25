@@ -125,56 +125,8 @@ export function UpdateBanner({ className, compact = false, variant = "default" }
     }
   };
 
-  // Show auth-required state — user needs to sign in to download updates
-  if (authRequired) {
-    if (compact) {
-      return (
-        <div className={cn("flex items-center gap-2 text-xs text-muted-foreground", className)}>
-          <Sparkles className="h-3 w-3 text-primary" />
-          <span>V{authRequired.version} available</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-5 px-2 text-xs"
-            onClick={() => window.location.href = "/home"}
-          >
-            Sign in to update
-          </Button>
-        </div>
-      );
-    }
-    return (
-      <div className={cn(
-        "flex items-center justify-between gap-3 px-3 py-2 bg-muted/50 border-b text-sm",
-        className
-      )}>
-        <div className="flex items-center gap-2 flex-1">
-          <Sparkles className="h-4 w-4 text-primary" />
-          <span>
-            Screenpipe <span className="font-medium">V{authRequired.version}</span> is available — sign in to download
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="default"
-            size="sm"
-            className="h-7 px-3 text-xs"
-            onClick={() => window.location.href = "/home"}
-          >
-            Sign in
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0"
-            onClick={() => dismiss(authRequired.version)}
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
-    );
-  }
+  // Hosted account update offers are not part of this personal build.
+  if (authRequired) return null;
 
   if (!isVisible || !updateInfo) return null;
 

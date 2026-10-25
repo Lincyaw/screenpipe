@@ -46,13 +46,19 @@ pub use cancellable_query::{
     SQLITE_PROGRESS_CHECK_OPS,
 };
 pub use db::{
+    HierarchySummary, HierarchySummaryConfig, HierarchySummaryJob, HierarchySummaryCounts, SummaryCitation, SummaryCoverage, SummaryStatement, SummarySourceVersion,
     find_matching_a11y_positions, parse_all_text_positions, ActivityActionDraft,
     ActivityActionRecord, ActivityEvidenceDraft, ActivityEvidenceRecord, ActivityIntervalDraft,
     ActivityIntervalRecord, ActivityLedgerObservation, ActivityTaskDraft, DatabaseManager,
-    DeleteTimeRangeResult, ImmediateTx, NewMeetingTranscriptSegment, SemanticActor,
-    SemanticActorAlias, SemanticActorReference, SemanticAttachResult, SemanticCleanupResult,
+    DeleteTimeRangeResult, ExplicitMemoryAnchor, ExplicitMemoryError, ExplicitMemoryImage,
+    MemoryNode, MemoryEvidence, MemoryNodeDetail, MemoryTreeQuery, MemoryIndexJob,
+    MemoryIndexStatus, MemorySearchHit, MemoryNodeCorrection,
+    ExplicitMemoryMark, ExplicitMemoryQuery, ImmediateTx, NewExplicitMemoryMark,
+    NewMeetingTranscriptSegment, MarkedCaptureOutcome, MarkedCaptureRequest, SemanticActor, SemanticActorAlias, SemanticActorReference,
+    SemanticAttachResult, SemanticCleanupResult,
     SemanticContextQuery, SemanticFrameContext, SemanticProjectionWriteResult, StarredSession,
-    MEETING_END_REASON_AUTO_END, MEETING_END_REASON_EXPLICIT_STOP, MEETING_END_REASON_ROOM_CHANGED,
+    UpdateExplicitMemoryMark, EXPLICIT_MEMORY_MAX_IMAGE_BYTES, MEETING_END_REASON_AUTO_END,
+    MEETING_END_REASON_EXPLICIT_STOP, MEETING_END_REASON_ROOM_CHANGED,
     MEETING_END_REASON_SHUTDOWN,
 };
 pub use recovery::{

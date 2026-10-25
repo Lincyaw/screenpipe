@@ -4,40 +4,23 @@
 import { useTimelineSelection } from "@/lib/hooks/use-timeline-selection";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
-import { Tag, Plus, Trash2, RefreshCw, Loader2, X } from "lucide-react";
+import { Tag, Plus, Trash2, Loader2, X } from "lucide-react";
 import { useState, useRef, useMemo, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "@/components/ui/use-toast";
 import { clearTimelineCache } from "@/lib/hooks/use-timeline-cache";
 import { clearTextCache } from "@/lib/hooks/use-frame-text-data";
 import posthog from "posthog-js";
-import { PipeAIIcon } from "@/components/pipe-ai-icon";
+
 import { localFetch } from "@/lib/api";
-import { showChatWithPrefill } from "@/lib/chat-utils";
-import { type TemplatePipe } from "@/lib/hooks/use-pipes";
-import { AnimatePresence, motion } from "framer-motion";
+
+
+
 import { useGT } from "gt-react";
 import { useUiLocale } from "@/lib/i18n/provider";
 
 
 const DEFAULT_TAGS = ["deep work", "meeting", "admin", "break"];
-
-// Muted hues for pipe circles
-const PIPE_COLORS = [
-	"hsl(220, 25%, 55%)", // slate blue
-	"hsl(340, 20%, 52%)", // muted rose
-	"hsl(160, 20%, 48%)", // sage
-	"hsl(30, 25%, 52%)",  // warm gray
-	"hsl(270, 18%, 55%)", // lavender
-	"hsl(50, 20%, 50%)",  // khaki
-];
-
-function pipeInitials(name: string): string {
-	// "meeting-summary" → "MS", "day-recap" → "DR", "ai-habits" → "AH"
-	const parts = name.split(/[-_\s]+/).filter(Boolean);
-	if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-	return name.slice(0, 2).toUpperCase();
-}
 
 interface FrequentTag {
 	name: string;
@@ -47,27 +30,18 @@ interface FrequentTag {
 interface TimelineTagToolbarProps {
 	/** Bounding rect of the selection range for positioning */
 	anchorRect: { x: number; y: number; width: number } | null;
-	/** Called when user clicks "ask AI" — parent handles building context and opening chat */
-	onAskAI?: () => void;
-	/** Called when user clicks a pipe in the radial menu */
-	onRunPipe?: (pipe: TemplatePipe) => void;
-	/** Available template pipes for the radial menu */
-	templatePipes?: TemplatePipe[];
+
 }
 
-export function TimelineTagToolbar({ anchorRect, onAskAI, onRunPipe, templatePipes }: TimelineTagToolbarProps) {
+export function TimelineTagToolbar({ anchorRect }: TimelineTagToolbarProps) {
   const uiLocale = useUiLocale();
   const ui = useGT();
 	const { selectionRange, tagFrames, removeTagFromFrames, setSelectionRange, tags } = useTimelineSelection();
 	const [customTag, setCustomTag] = useState("");
-	const [radialOpen, setRadialOpen] = useState(false);
-	const radialTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const [hoveredPipeIndex, setHoveredPipeIndex] = useState<number | null>(null);
 	const [isApplying, setIsApplying] = useState(false);
 	const [frequentTags, setFrequentTags] = useState<FrequentTag[]>([]);
 	const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 	const [isDeleting, setIsDeleting] = useState(false);
-	const [isRetranscribing, setIsRetranscribing] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
 
 	// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -215,26 +189,6 @@ export function TimelineTagToolbar({ anchorRect, onAskAI, onRunPipe, templatePip
 		}
 	}, [selectionRange, isDeleting, setSelectionRange, uiLocale]);
 
-	const handleRetranscribe = useCallback(async () => {
-		if (!selectionRange || isRetranscribing) return;
-		setIsRetranscribing(true);
-
-		const start = selectionRange.start.toISOString();
-		const end = selectionRange.end.toISOString();
-
-		try {
-			posthog.capture("timeline_retranscribe", { method: "ai_chat" });
-			await showChatWithPrefill({
-				context: "",
-				prompt: `please read your screenpipe-api skill first, then retranscribe the audio from ${start} to ${end}. after retranscribing, ask me if i want to assign speaker names to the different speakers in the transcription.`,
-				autoSend: true,
-				source: "retranscribe-button",
-			});
-		} finally {
-			setIsRetranscribing(false);
-		}
-	}, [selectionRange, isRetranscribing]);
-
 	// Early return AFTER all hooks
 	if (!selectionRange || !anchorRect || frameIds.length === 0) {
 		return null;
@@ -301,164 +255,8 @@ export function TimelineTagToolbar({ anchorRect, onAskAI, onRunPipe, templatePip
 							<Trash2 className="w-3.5 h-3.5" />
 						)}
 					</button>
-						{onAskAI && (
-							<div
-								className="relative"
-								onMouseEnter={() => {
-									if (radialTimeoutRef.current) clearTimeout(radialTimeoutRef.current);
-									if (templatePipes && templatePipes.length > 0) setRadialOpen(true);
-								}}
-								onMouseLeave={() => {
-									radialTimeoutRef.current = setTimeout(() => {
-										setRadialOpen(false);
-										setHoveredPipeIndex(null);
-									}, 300);
-								}}
-							>
-								<button
-									onClick={onAskAI}
-									className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-md bg-foreground text-background hover:bg-foreground/90 transition-colors font-medium flex-shrink-0 cursor-pointer"
-									title={ui("Ask AI")}
-								>
-									<span className="pointer-events-none">
-										<PipeAIIcon size={14} animated={radialOpen} />
-									</span>
-									Ask AI
-								</button>
-								<AnimatePresence>
-									{radialOpen && templatePipes && templatePipes.length > 0 && (() => {
-										const maxVisible = 6;
-										const visible = templatePipes.slice(0, maxVisible);
-										const overflow = templatePipes.length - maxVisible;
-										const count = visible.length + (overflow > 0 ? 1 : 0);
-										const radius = 60;
-										const containerSize = radius * 2 + 40;
-										return (
-											<div
-												className="absolute left-1/2 pointer-events-auto"
-												style={{
-													bottom: "100%",
-													transform: "translateX(-50%)",
-													width: containerSize,
-													height: radius + 24,
-													marginBottom: 6,
-												}}
-											>
-												{visible.map((pipe, i) => {
-													const startAngle = (-160 * Math.PI) / 180;
-													const endAngle = (-20 * Math.PI) / 180;
-													const angle = count === 1
-														? (-90 * Math.PI) / 180
-														: startAngle + (i / (count - 1)) * (endAngle - startAngle);
-													const x = Math.cos(angle) * radius;
-													const y = Math.sin(angle) * radius;
-													const color = PIPE_COLORS[i % PIPE_COLORS.length];
-													const label = pipe.icon || pipeInitials(pipe.name);
-													return (
-														<motion.div
-															key={pipe.name}
-															initial={{ scale: 0, opacity: 0 }}
-															animate={{ scale: 1, opacity: 1 }}
-															exit={{ scale: 0, opacity: 0 }}
-															transition={{ delay: i * 0.04, duration: 0.15 }}
-															className="absolute"
-															style={{
-																left: containerSize / 2 + x,
-																bottom: -y,
-																width: 32,
-																height: 32,
-																marginLeft: -16,
-																marginBottom: -16,
-															}}
-														>
-															<button
-																className="w-full h-full rounded-full border-2 shadow-md flex items-center justify-center text-[10px] font-bold cursor-pointer transition-all hover:scale-125 hover:shadow-lg"
-																style={{
-																	borderColor: color,
-																	backgroundColor: `color-mix(in srgb, ${color} 15%, var(--popover))`,
-																	color: color,
-																}}
-																title={pipe.title}
-																onMouseEnter={() => setHoveredPipeIndex(i)}
-																onMouseLeave={() => setHoveredPipeIndex(null)}
-																onClick={(e) => {
-																	e.stopPropagation();
-																	setRadialOpen(false);
-																	onRunPipe?.(pipe);
-																}}
-															>
-																{label}
-															</button>
-														</motion.div>
-													);
-												})}
-												{overflow > 0 && (
-													<motion.div
-														initial={{ scale: 0, opacity: 0 }}
-														animate={{ scale: 1, opacity: 1 }}
-														exit={{ scale: 0, opacity: 0 }}
-														transition={{ delay: visible.length * 0.04, duration: 0.15 }}
-														className="absolute"
-														style={{
-															left: containerSize / 2 + Math.cos((-20 * Math.PI) / 180) * radius,
-															bottom: -Math.sin((-20 * Math.PI) / 180) * radius,
-															width: 32,
-															height: 32,
-															marginLeft: -16,
-															marginBottom: -16,
-														}}
-													>
-														<button
-															className="w-full h-full rounded-full bg-muted border border-border shadow-md flex items-center justify-center text-[10px] font-medium text-muted-foreground cursor-pointer hover:scale-110 transition-all"
-														title={ui("{value1} more scheduled tasks", { value1: overflow })}
-															onMouseEnter={() => setHoveredPipeIndex(maxVisible)}
-															onMouseLeave={() => setHoveredPipeIndex(null)}
-															onClick={(e) => {
-																e.stopPropagation();
-																onAskAI?.();
-																setRadialOpen(false);
-															}}
-														>
-															+{overflow}
-														</button>
-													</motion.div>
-												)}
-												<AnimatePresence>
-													{hoveredPipeIndex !== null && (
-														<motion.div
-															key={hoveredPipeIndex}
-															initial={{ opacity: 0, y: 4 }}
-															animate={{ opacity: 1, y: 0 }}
-															exit={{ opacity: 0 }}
-															transition={{ duration: 0.1 }}
-															className="absolute left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-foreground text-background text-[10px] whitespace-nowrap pointer-events-none shadow z-10"
-															style={{ top: -4 }}
-														>
-															{hoveredPipeIndex < visible.length
-																? visible[hoveredPipeIndex].title
-																: ui("{value1} more scheduled tasks", { value1: overflow })}
-														</motion.div>
-													)}
-												</AnimatePresence>
-											</div>
-										);
-									})()}
-								</AnimatePresence>
-							</div>
-						)}
-						<button
-							onClick={handleRetranscribe}
-							disabled={isRetranscribing}
-							className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-border hover:bg-muted transition-colors flex-shrink-0"
-							title={ui("Re-transcribe audio in this range via AI")}
-						>
-							{isRetranscribing ? (
-								<Loader2 className="w-3 h-3 animate-spin" />
-							) : (
-								<RefreshCw className="w-3 h-3" />
-							)}
-							Re-transcribe
-						</button>
+
+
 					</div>
 				</div>
 

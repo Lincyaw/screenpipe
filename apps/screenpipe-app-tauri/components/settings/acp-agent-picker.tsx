@@ -32,12 +32,7 @@ export function acpAgentForSelection(
     command: id === "custom" ? agent?.command ?? "" : undefined,
     args: id === "custom" ? agent?.args ?? [] : undefined,
     env: agent?.env ?? {},
-    // Picking an agent that can run on Screenpipe Cloud defaults to that, so
-    // a new preset works without the user first getting a provider account.
-    // Re-selecting the same agent keeps whatever they chose.
-    useScreenpipeCloud: isSwitch
-      ? acpAdapterInfo(id).supportsCloudRouting === true
-      : agent?.useScreenpipeCloud ?? null,
+    useScreenpipeCloud: false,
     // Model/mode overrides are per-agent: an option/mode id from one agent is
     // meaningless to another. Preserve them only when re-selecting the same
     // agent; drop them on a real switch so a stale override can't apply.
@@ -101,7 +96,7 @@ export function AcpAgentPicker({
   const adapters = useSelectableAcpAdapters(currentId);
   // A preset saved before this choice existed has no value; those keep running
   // on the agent's own account, so only an explicit true means cloud.
-  const useCloud = agent?.useScreenpipeCloud === true;
+  const useCloud = false;
 
   // Merge a partial change into the current agent and emit the full object.
   const merge = (change: Partial<AcpAgentConfig>) =>
@@ -189,60 +184,6 @@ export function AcpAgentPicker({
       <p className={cn("text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
         {info.description}
       </p>
-
-      {/* Where the agent's model calls go. Only shown for agents the catalog
-          knows how to point at the gateway; a closed agent (Cursor, Copilot)
-          talks to its own service and has no such choice. */}
-      {info.supportsCloudRouting && (
-        <div className="space-y-1">
-          <Label className={compact ? "text-xs" : undefined}>
-            {compact ? ui("Model billing") : ui("Model calls")}
-          </Label>
-          <div
-            role="radiogroup"
-            aria-label={ui("Where the agent's model calls go")}
-            className="grid grid-cols-2 gap-1.5"
-          >
-            {[
-              { cloud: true, label: ui("Screenpipe Cloud"), hint: "Included in your plan" },
-              { cloud: false, label: ui("Your {value1} account", { value1: info.name }), hint: "Billed by them" },
-            ].map((choice) => {
-              const selected = useCloud === choice.cloud;
-              return (
-                <button
-                  key={String(choice.cloud)}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  data-acp-cloud-option={String(choice.cloud)}
-                  onClick={() => merge({ useScreenpipeCloud: choice.cloud })}
-                  className={cn(
-                    "rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-accent",
-                    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                    compact ? "text-xs" : "text-sm",
-                    selected ? "border-primary ring-1 ring-primary" : "border-input",
-                  )}
-                >
-                  <span className="block truncate">{choice.label}</span>
-                  <span
-                    className={cn(
-                      "block truncate text-muted-foreground",
-                      compact ? "text-[10px]" : "text-xs",
-                    )}
-                  >
-                    {choice.hint}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          <p className={cn("text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
-            {useCloud
-              ? ui("{value1} still runs locally and signs in as itself. Only its model calls go through Screenpipe.", { value1: info.name })
-              : ui("{value1} bills its own account for model use. You need to be signed in to it.", { value1: info.name })}
-          </p>
-        </div>
-      )}
 
       {/* Keep the quick dialog focused on setup; the full settings editor shows
           the ownership split where people troubleshoot configuration. */}

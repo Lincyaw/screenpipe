@@ -5,6 +5,7 @@
 use super::*;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use std::collections::HashMap;
 
@@ -405,6 +406,10 @@ impl DatabaseManager {
             }
         }
 
+        // This can be a historical slice, not just a trailing live watermark.
+        // Preserve the other side before truncating/deleting intersecting rows.
+        preserve_activity_suffixes(&mut tx, producer, range_end).await?;
+
         // Preserve the finalized prefix of a segment crossing the reconciliation
         // watermark, then replace everything beginning inside the trailing range.
         sqlx::query(
@@ -430,10 +435,18 @@ impl DatabaseManager {
         .execute(&mut **tx.conn())
         .await?;
         sqlx::query(
-            "UPDATE activity_intervals SET end_at = ?2, state = 'final', \
+            // An older interval may begin less than one millisecond before the
+            // moving watermark. Preserve that prefix with the smallest SQLite
+            // time envelope instead of violating its julianday length CHECK.
+            // Source evidence times and recordings remain unchanged.
+            "UPDATE activity_intervals SET start_at = CASE \
+                    WHEN julianday(?2) <= julianday(start_at) \
+                    THEN strftime('%Y-%m-%dT%H:%M:%fZ', julianday(?2) - 1.0/86400000.0) \
+                    ELSE start_at END, end_at = ?2, state = 'final', \
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
              WHERE producer = ?1 AND start_at < ?2 \
-               AND end_at > ?2",
+               AND end_at > ?2 AND julianday(start_at) <= julianday(?2) \
+               AND julianday(end_at) > julianday(?2)",
         )
         .bind(producer)
         .bind(&range_start_text)
@@ -740,6 +753,138 @@ impl DatabaseManager {
             })
             .collect())
     }
+}
+
+/// Keep the part after a bounded replacement in the same coordinated write.
+/// There are no per-capture hooks: only intersecting derived rows are touched.
+async fn preserve_activity_suffixes(
+    tx: &mut ImmediateTx,
+    producer: &str,
+    range_end: DateTime<Utc>,
+) -> Result<(), SqlxError> {
+    let boundary = range_end.to_rfc3339();
+    // Include the boundary millisecond, then compare Chrono values so exact
+    // sub-millisecond old bounds are neither silently lost nor misclassified.
+    let rows = sqlx::query(
+        "SELECT i.id,i.interval_key,i.start_at,i.end_at FROM activity_intervals i \
+         WHERE i.producer=?1 AND julianday(i.start_at)<=julianday(?2) \
+           AND julianday(i.end_at)>=julianday(?2) \
+           AND EXISTS(SELECT 1 FROM activity_evidence e \
+             WHERE e.interval_id=i.id AND e.occurred_at>=?2) LIMIT 257",
+    )
+    .bind(producer)
+    .bind(&boundary)
+    .fetch_all(&mut **tx.conn())
+    .await?;
+    if rows.len() > 256 {
+        return Err(SqlxError::Protocol(
+            "activity suffix preservation budget exceeded; saved ledger retained".into(),
+        ));
+    }
+    let mut seeds = Vec::new();
+    for row in rows {
+        let start: DateTime<Utc> = row.try_get("start_at")?;
+        let end: DateTime<Utc> = row.try_get("end_at")?;
+        if start < range_end && end > range_end {
+            let key: String = row.try_get("interval_key")?;
+            let suffix_key = format!(
+                "suffix:{:x}",
+                Sha256::digest(format!("{key}|{boundary}").as_bytes())
+            );
+            seeds.push((row.try_get::<i64, _>("id")?, suffix_key));
+        }
+    }
+    if seeds.is_empty() {
+        return Ok(());
+    }
+    let encoded = serde_json::to_string(&seeds)
+        .map_err(|_| SqlxError::Protocol("activity suffix mapping unavailable".into()))?;
+    // A single old interval may span a large requested history range. Bound
+    // copied derived rows before any mutation, without limiting capture writes.
+    let (actions, evidence): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM (SELECT 1 FROM activity_actions \
+           WHERE interval_id IN (SELECT json_extract(value,'$[0]') FROM json_each(?1)) \
+             AND occurred_at>=?2 LIMIT 2001)), \
+           (SELECT count(*) FROM (SELECT 1 FROM activity_evidence \
+           WHERE interval_id IN (SELECT json_extract(value,'$[0]') FROM json_each(?1)) \
+             AND occurred_at>=?2 LIMIT 2001))",
+    )
+    .bind(&encoded)
+    .bind(&boundary)
+    .fetch_one(&mut **tx.conn())
+    .await?;
+    if actions > 2000 || evidence > 2000 {
+        return Err(SqlxError::Protocol(
+            "activity suffix preservation budget exceeded; saved ledger retained".into(),
+        ));
+    }
+    // Every generated action has matching source evidence. A live-tail-only
+    // prediction with no evidence after the boundary needs no saved suffix;
+    // copying older support there would cross its time/history provenance.
+    // Independent keys cannot collide with a freshly rebuilt input interval.
+    // Preserve old metadata; only an unrepresentable <1ms tail is enclosed by
+    // the smallest positive SQLite interval. Exact evidence times stay intact.
+    let saved = sqlx::query(
+        "INSERT INTO activity_intervals \
+         (interval_key,task_id,start_at,end_at,state,confidence,producer,created_at,updated_at) \
+         SELECT json_extract(j.value,'$[1]'),i.task_id,?2, \
+           CASE WHEN julianday(i.end_at)>julianday(?2) THEN i.end_at \
+                ELSE strftime('%Y-%m-%dT%H:%M:%fZ',julianday(?2)+1.0/86400000.0) END, \
+           i.state,i.confidence,i.producer,i.created_at,i.updated_at \
+         FROM activity_intervals i JOIN json_each(?1) j \
+           ON i.id=json_extract(j.value,'$[0]') WHERE 1 \
+         ON CONFLICT(interval_key) DO UPDATE SET task_id=excluded.task_id, \
+           start_at=excluded.start_at,end_at=excluded.end_at,state=excluded.state, \
+           confidence=excluded.confidence,producer=excluded.producer, \
+           updated_at=excluded.updated_at RETURNING id,interval_key",
+    )
+    .bind(encoded)
+    .bind(&boundary)
+    .fetch_all(&mut **tx.conn())
+    .await?;
+    let saved_ids: HashMap<String, i64> = saved
+        .into_iter()
+        .map(|row| Ok((row.try_get("interval_key")?, row.try_get("id")?)))
+        .collect::<Result<_, SqlxError>>()?;
+    let mapping: Vec<_> = seeds
+        .into_iter()
+        .map(|(old_id, key)| {
+            saved_ids
+                .get(&key)
+                .copied()
+                .map(|new_id| (old_id, new_id))
+                .ok_or(SqlxError::RowNotFound)
+        })
+        .collect::<Result<_, _>>()?;
+    let mapping = serde_json::to_string(&mapping)
+        .map_err(|_| SqlxError::Protocol("activity suffix mapping unavailable".into()))?;
+    // action_key is globally unique. Move the existing row/ID, then copy its
+    // evidence, so deleting the old interval cannot cascade into the suffix.
+    // Ledger timestamps are normalized UTC strings written by this module.
+    sqlx::query(
+        "UPDATE activity_actions SET interval_id=( \
+           SELECT json_extract(j.value,'$[1]') FROM json_each(?1) j \
+           WHERE json_extract(j.value,'$[0]')=activity_actions.interval_id) \
+         WHERE interval_id IN (SELECT json_extract(value,'$[0]') FROM json_each(?1)) \
+           AND occurred_at>=?2",
+    )
+    .bind(&mapping)
+    .bind(&boundary)
+    .execute(&mut **tx.conn())
+    .await?;
+    sqlx::query(
+        "INSERT INTO activity_evidence(interval_id,action_id,source_type,source_id,occurred_at) \
+         SELECT json_extract(j.value,'$[1]'),e.action_id,e.source_type,e.source_id,e.occurred_at \
+         FROM activity_evidence e JOIN json_each(?1) j \
+           ON e.interval_id=json_extract(j.value,'$[0]') WHERE e.occurred_at>=?2 \
+         ON CONFLICT(interval_id,source_type,source_id) DO UPDATE SET \
+           action_id=excluded.action_id,occurred_at=excluded.occurred_at",
+    )
+    .bind(mapping)
+    .bind(boundary)
+    .execute(&mut **tx.conn())
+    .await?;
+    Ok(())
 }
 
 async fn upsert_task(

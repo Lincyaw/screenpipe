@@ -12,7 +12,7 @@ use crate::capture_session::CaptureSession;
 use crate::config;
 use crate::permissions::{do_permissions_check, OSPermissionStatus};
 use crate::server_core::ServerCore;
-use crate::store::{LocalPlanPolicy, OnboardingStore, SettingsStore};
+use crate::store::SettingsStore;
 use screenpipe_engine::RecordingConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -124,136 +124,12 @@ fn configured_local_api_port(app: &tauri::AppHandle) -> u16 {
         .unwrap_or(DEFAULT_LOCAL_API_PORT)
 }
 
-fn recording_access_policy(
-    is_enterprise_build: bool,
-    dev_bypass: bool,
-    has_verified_local_plan: bool,
-    enterprise_authorized: bool,
-    consumer_requires_enterprise_app: bool,
-    trial_activation_paywall: bool,
-    authentication_status: crate::startup_auth::AuthenticationStatus,
-) -> bool {
-    if authentication_status == crate::startup_auth::AuthenticationStatus::LoggedOut {
-        return false;
-    }
-    if trial_activation_paywall {
-        return false;
-    }
-    if authentication_status == crate::startup_auth::AuthenticationStatus::NotRequired {
-        return true;
-    }
-    server_access_policy(
-        is_enterprise_build,
-        dev_bypass,
-        has_verified_local_plan,
-        enterprise_authorized,
-        consumer_requires_enterprise_app,
-    )
-}
-
-fn server_access_policy(
-    is_enterprise_build: bool,
-    dev_bypass: bool,
-    has_verified_local_plan: bool,
-    enterprise_authorized: bool,
-    consumer_requires_enterprise_app: bool,
-) -> bool {
-    if dev_bypass {
-        return true;
-    }
-    if !is_enterprise_build && consumer_requires_enterprise_app {
-        return false;
-    }
-    if is_enterprise_build {
-        // Consumer billing entitlement is not an Enterprise credential. Both
-        // account and key deployments use the same process-local grant, set
-        // only after policy and seat enrollment succeed for the organization.
-        return enterprise_authorized;
-    }
-    has_verified_local_plan
-}
-
-pub(crate) fn server_access_allowed(app: &tauri::AppHandle, store: &SettingsStore) -> bool {
-    let startup_authentication = app
-        .try_state::<crate::startup_auth::AuthenticationStatus>()
-        .map(|status| *status)
-        .unwrap_or(crate::startup_auth::AuthenticationStatus::LoggedOut);
-    let authenticated_after_startup = if crate::app_mode::for_settings(store) {
-        crate::enterprise_policy::recording_authorized()
-    } else {
-        store.has_cloud_authentication()
-    };
-    if startup_authentication == crate::startup_auth::AuthenticationStatus::LoggedOut
-        && !authenticated_after_startup
-    {
-        return false;
-    }
-
-    server_access_policy(
-        crate::app_mode::for_settings(store),
-        cfg!(debug_assertions),
-        store.local_plan_policy() != LocalPlanPolicy::Unknown,
-        crate::enterprise_policy::recording_authorized(),
-        !cfg!(debug_assertions) && store.requires_enterprise_app_for_consumer(),
-    )
-}
-
-/// Personal accounts may record on a verified free plan. Managed accounts and
-/// deployments require native organization policy and seat authorization.
-pub(crate) fn recording_access_allowed(app: &tauri::AppHandle, store: &SettingsStore) -> bool {
-    let trial_activation_paywall = !crate::should_skip_onboarding()
-        && OnboardingStore::get(app)
-            .ok()
-            .flatten()
-            .unwrap_or_default()
-            .blocks_trial_activation_recording();
-    let resolved_authentication = app
-        .try_state::<crate::startup_auth::AuthenticationStatus>()
-        .map(|status| *status)
-        .unwrap_or(crate::startup_auth::AuthenticationStatus::LoggedOut);
-    // The bootstrap result owns initial startup ordering. A later successful
-    // sign-in may open recording without relaunching the already-initialized
-    // app, so derive the current authenticated state from the same native
-    // authorities used by the runtime guards.
-    let authentication_status = if resolved_authentication
-        == crate::startup_auth::AuthenticationStatus::LoggedOut
-        && if crate::app_mode::for_settings(store) {
-            crate::enterprise_policy::recording_authorized()
-        } else {
-            store.has_cloud_authentication()
-        } {
-        crate::startup_auth::AuthenticationStatus::Authenticated
-    } else {
-        resolved_authentication
-    };
-    recording_access_policy(
-        crate::app_mode::for_settings(store),
-        cfg!(debug_assertions),
-        store.local_plan_policy() != LocalPlanPolicy::Unknown,
-        crate::enterprise_policy::recording_authorized(),
-        !cfg!(debug_assertions) && store.requires_enterprise_app_for_consumer(),
-        trial_activation_paywall,
-        authentication_status,
-    )
-}
-
-fn require_recording_access(app: &tauri::AppHandle, store: &SettingsStore) -> Result<(), String> {
-    if recording_access_allowed(app, store) {
-        return Ok(());
-    }
-
-    crate::health::set_recording_status(crate::health::RecordingStatus::Paused);
-    Err("account_required: sign in to start screenpipe recording".to_string())
-}
-
-fn require_server_access(app: &tauri::AppHandle, store: &SettingsStore) -> Result<(), String> {
-    if server_access_allowed(app, store) {
-        return Ok(());
-    }
-
-    crate::health::set_recording_status(crate::health::RecordingStatus::Paused);
-    Err("account_required: sign in to start screenpipe".to_string())
-}
+/// Capture access is local. Explicit capture commands still pass the existing
+/// OS permission, user pause, disk integrity and session lifecycle checks.
+pub(crate) fn server_access_allowed(_app: &tauri::AppHandle, _store: &SettingsStore) -> bool { true }
+pub(crate) fn recording_access_allowed(_app: &tauri::AppHandle, _store: &SettingsStore) -> bool { true }
+fn require_recording_access(_app: &tauri::AppHandle, _store: &SettingsStore) -> Result<(), String> { Ok(()) }
+fn require_server_access(_app: &tauri::AppHandle, _store: &SettingsStore) -> Result<(), String> { Ok(()) }
 
 pub fn notify_audio_engine_fallback(store: &SettingsStore) {
     if store.recording.disable_audio {
@@ -407,16 +283,9 @@ impl RecordingState {
 
 pub(crate) fn refresh_history_access_policy(
     policy: &screenpipe_engine::history_access::HistoryAccessPolicy,
-    settings: &SettingsStore,
 ) {
-    policy.set_last_24_hours(history_access_restricted(
-        crate::app_mode::for_settings(settings),
-        settings.is_free_or_unattributed_user(),
-    ));
-}
-
-fn history_access_restricted(is_enterprise_build: bool, free_or_unattributed: bool) -> bool {
-    !is_enterprise_build && free_or_unattributed
+    // Personal source builds expose all retained local history, regardless of plan.
+    policy.set_last_24_hours(false);
 }
 
 fn capture_intended_now(wants_recording: &AtomicBool) -> bool {
@@ -2222,239 +2091,25 @@ mod local_api_auth_tests {
 }
 
 #[cfg(test)]
-mod recording_access_tests {
-    use super::{recording_access_policy, server_access_policy};
-    use crate::startup_auth::{AuthenticationStatus, DeferredAccountStart};
-    use crate::store::{LocalPlanPolicy, SettingsStore};
-
-    #[test]
-    fn account_refresh_recovers_deferred_start_without_a_frontend_gate() {
-        let pending = DeferredAccountStart::default();
-        let mut settings = SettingsStore::default();
-        settings.user.id = Some("subscribed-user".into());
-        settings.user.subscription_plan = Some("pro".into());
-        settings.user.app_entitled = Some(true);
-        let access = |settings: &SettingsStore| {
-            server_access_policy(
-                false,
-                false,
-                settings.local_plan_policy() != LocalPlanPolicy::Unknown,
-                false,
-                false,
-            )
-        };
-
-        // Boot has a signed-in paid account but no verified cached evidence.
-        assert!(!access(&settings));
-        pending.defer();
-        assert!(!pending.take_if_allowed(access(&settings), || {}));
-
-        // /api/user refresh supplies verified evidence before any UI gate
-        // mounts. Recovery must not require a frontend stop or gate transition.
-        settings.user.entitlement = Some(serde_json::json!({
-            "plan": "pro",
-            "active": true,
-            "source": "subscription",
-            "checked_at": chrono::Utc::now().to_rfc3339(),
-            "features": { "app": true }
-        }));
-        assert!(access(&settings));
-        assert!(pending.take_if_allowed(access(&settings), || {}));
-        assert!(!pending.take_if_allowed(access(&settings), || {}));
-    }
-
-    #[test]
-    fn account_refresh_does_not_start_an_unrequested_or_cancelled_engine() {
-        let pending = DeferredAccountStart::default();
-        assert!(!pending.take_if_allowed(true, || {}));
-        pending.defer();
-        pending.cancel(); // explicit capture stop or sign-out
-        assert!(!pending.take_if_allowed(true, || {}));
-    }
-
-    #[test]
-    fn account_refresh_before_native_deferral_is_reconciled_at_deferral() {
-        let pending = DeferredAccountStart::default();
-        // A refresh before the native gate has nothing to resume yet.
-        assert!(!pending.take_if_allowed(true, || {}));
-        pending.defer();
-        // Native deferral also checks current access, not its old snapshot.
-        assert!(pending.take_if_allowed(true, || {}));
-        assert!(!pending.take_if_allowed(true, || {}));
-    }
-
-    #[test]
-    fn concurrent_account_refreshes_claim_only_one_deferred_start() {
-        let pending = std::sync::Arc::new(DeferredAccountStart::default());
-        pending.defer();
-        let workers: Vec<_> = (0..8)
-            .map(|_| {
-                let pending = pending.clone();
-                std::thread::spawn(move || pending.take_if_allowed(true, || {}))
-            })
-            .collect();
-        let starts = workers
-            .into_iter()
-            .map(|worker| usize::from(worker.join().unwrap()))
-            .sum::<usize>();
-        assert_eq!(starts, 1);
-    }
-
-    #[test]
-    fn explicit_stop_wins_over_an_in_flight_account_resume() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let pending = DeferredAccountStart::default();
-        let wants_recording = AtomicBool::new(false);
-        pending.defer();
-        let (stop_requested, stop_request) = std::sync::mpsc::channel();
-        std::thread::scope(|scope| {
-            pending.take_if_allowed(true, || {
-                scope.spawn(|| {
-                    stop_requested.send(()).unwrap();
-                    pending.cancel();
-                    wants_recording.store(false, Ordering::SeqCst);
-                });
-                stop_request.recv().unwrap();
-                wants_recording.store(true, Ordering::SeqCst);
-            });
-        });
-        assert!(!wants_recording.load(Ordering::SeqCst));
-        assert!(!pending.take_if_allowed(true, || panic!("stop was lost")));
-    }
-
-    #[test]
-    fn verified_free_consumer_can_record_without_a_paid_entitlement() {
-        assert!(recording_access_policy(
-            false,
-            false,
-            true,
-            false,
-            false,
-            false,
-            AuthenticationStatus::Authenticated,
-        ));
-    }
-
-    #[test]
-    fn consumer_with_unknown_plan_cannot_record() {
-        assert!(!recording_access_policy(
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            AuthenticationStatus::Authenticated,
-        ));
-    }
-
-    #[test]
-    fn signed_out_consumer_cannot_start_recording() {
-        assert!(!recording_access_policy(
-            false,
-            false,
-            true,
-            false,
-            false,
-            false,
-            AuthenticationStatus::LoggedOut,
-        ));
-    }
-
-    #[test]
-    fn enterprise_build_requires_verified_enterprise_session() {
-        assert!(!recording_access_policy(
-            true,
-            false,
-            true,
-            false,
-            false,
-            false,
-            AuthenticationStatus::Authenticated,
-        ));
-        assert!(recording_access_policy(
-            true,
-            false,
-            false,
-            true,
-            false,
-            false,
-            AuthenticationStatus::Authenticated,
-        ));
-    }
-
-    #[test]
-    fn mandatory_enterprise_org_cannot_record_from_consumer_binary() {
-        assert!(!recording_access_policy(
-            false,
-            false,
-            true,
-            true,
-            true,
-            false,
-            AuthenticationStatus::Authenticated,
-        ));
-    }
-
-    #[test]
-    fn summary_paywall_blocks_capture_even_in_debug_builds() {
-        assert!(!recording_access_policy(
-            false,
-            true,
-            true,
-            false,
-            false,
-            true,
-            AuthenticationStatus::Authenticated,
-        ));
-    }
-
-    #[test]
-    fn signup_free_startup_does_not_require_account_or_enterprise_auth() {
-        assert!(recording_access_policy(
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            AuthenticationStatus::NotRequired,
-        ));
-        assert!(recording_access_policy(
-            true,
-            false,
-            false,
-            false,
-            false,
-            false,
-            AuthenticationStatus::NotRequired,
-        ));
-    }
-
-    #[test]
-    fn summary_paywall_keeps_the_local_read_server_available() {
-        assert!(server_access_policy(false, true, true, false, false));
-        assert!(server_access_policy(false, false, true, false, false));
-    }
-}
-
-#[cfg(test)]
 mod history_access_tests {
-    use super::history_access_restricted;
+    use super::refresh_history_access_policy;
+    use screenpipe_engine::history_access::HistoryAccessPolicy;
 
     #[test]
-    fn consumer_free_and_unattributed_accounts_are_restricted() {
-        assert!(history_access_restricted(false, true));
+    fn account_refresh_removes_existing_history_restrictions() {
+        let policy = HistoryAccessPolicy::last_24_hours();
+        let server_policy = policy.clone();
+        refresh_history_access_policy(&policy);
+        assert!(!server_policy.is_restricted());
+        let now = chrono::Utc::now();
+        assert!(server_policy.allows(now - chrono::Duration::days(30), now));
     }
 
     #[test]
-    fn verified_paid_consumer_is_unrestricted() {
-        assert!(!history_access_restricted(false, false));
-    }
-
-    #[test]
-    fn enterprise_build_is_unrestricted_without_consumer_plan_truth() {
-        assert!(!history_access_restricted(true, true));
+    fn account_refresh_preserves_unrestricted_history() {
+        let policy = HistoryAccessPolicy::unrestricted();
+        refresh_history_access_policy(&policy);
+        assert!(!policy.is_restricted());
     }
 }
 

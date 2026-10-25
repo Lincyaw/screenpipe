@@ -610,6 +610,11 @@ impl SCServer {
     }
 
     async fn create_router_inner(&self) -> Router {
+        // A new server never promises completion for a worker lost on restart.
+        // This joins the existing writer and runs before HTTP admission.
+        if let Err(error) = self.db.interrupt_pending_marked_captures().await {
+            tracing::warn!(%error, "could not recover intentional capture requests");
+        }
         let protected_db = self
             .db
             .protected_reads()
@@ -892,6 +897,10 @@ impl SCServer {
                 .await;
         }
         spawn_artifact_search_backfill(self.db.clone());
+        // Derived context joins the existing writer after captures are durable.
+        // Workers are bounded, restartable, and never gate recording admission.
+        let _ = crate::hierarchical_memory::spawn(app_state.db.clone());
+        crate::hierarchy_summary::start(&app_state);
 
         // Restrict CORS to localhost origins (Tauri webview + local development).
         // Remote origins are blocked to prevent malicious websites from making
@@ -1122,6 +1131,40 @@ impl SCServer {
                 get(crate::routes::privacy_release::ready_page),
             )
             .merge(server.into_router())
+            .merge(
+                Router::new()
+                    .route("/capture/marked", axum::routing::post(crate::marked_capture::create))
+                    .route("/capture/marked/:id", axum::routing::get(crate::marked_capture::get))
+                    .route(
+                        "/memory/marks",
+                        axum::routing::get(crate::routes::explicit_memory::list_marks)
+                            .post(crate::routes::explicit_memory::create_mark),
+                    )
+                    .route(
+                        "/memory/marks/:id",
+                        axum::routing::get(crate::routes::explicit_memory::get_mark)
+                            .patch(crate::routes::explicit_memory::update_mark)
+                            .delete(crate::routes::explicit_memory::delete_mark),
+                    )
+                    .route(
+                        "/memory/marks/:id/image",
+                        axum::routing::get(crate::routes::explicit_memory::get_mark_image),
+                    )
+                    .route("/memory/tree", get(crate::routes::hierarchical_memory::tree))
+                    .route("/memory/search", get(crate::routes::hierarchical_memory::search))
+                    .route("/memory/index/status", get(crate::routes::hierarchical_memory::status))
+                    .route("/memory/index/rebuild", axum::routing::post(crate::routes::hierarchical_memory::rebuild))
+                    .route("/memory/nodes/:id", get(crate::routes::hierarchical_memory::node).patch(crate::routes::hierarchical_memory::correct))
+                    .route("/memory/nodes/:id/merge", axum::routing::post(crate::routes::hierarchical_memory::merge))
+                    .route("/memory/nodes/:id/split", axum::routing::post(crate::routes::hierarchical_memory::split))
+                    .route("/memory/summary/config", get(crate::hierarchy_summary::get_config).put(crate::hierarchy_summary::put_config))
+                    .route("/memory/summary/status", get(crate::hierarchy_summary::status))
+                    .route("/memory/summary/jobs/:id", get(crate::hierarchy_summary::get_job))
+                    .route("/memory/nodes/:id/summary", get(crate::hierarchy_summary::get_summary))
+                    .route("/memory/nodes/:id/summarize", axum::routing::post(crate::hierarchy_summary::enqueue))
+                    .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
+                    .layer(axum::middleware::from_fn(crate::routes::explicit_memory::no_store)),
+            )
             // Agent self-improvement lives behind one validated local API so
             // native Pi and ACP share profile safety, prompt rendering, skill
             // provenance, optimistic concurrency, and bundled protection.
@@ -1272,6 +1315,7 @@ impl SCServer {
                 axum::routing::post(crate::routes::cloud_proxy::chat_completions)
                     .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024)), // 50MB
             )
+            .route("/agent-sessions", get(crate::routes::agent_sessions::get))
             // Local proxy → api.screenpipe.com/v1/web-search. Lets coding-agent
             // harnesses web-search through their bundled MCP tool without ever
             // holding the cloud JWT (scrubbed from third-party adapter trees).

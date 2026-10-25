@@ -840,6 +840,7 @@ fn read_enterprise_config_from_deployment() -> Option<EnterpriseFileConfig> {
 /// Read enterprise device config. Bundled/MDM config is authoritative unless
 /// the user file carries a validated recovery for that exact deployed key.
 pub fn get_enterprise_file_config() -> EnterpriseFileConfig {
+    if crate::app_mode::is_local_only() { return EnterpriseFileConfig::default(); }
     let bundled = read_enterprise_config_from_deployment();
     let user_path = screenpipe_core::paths::default_screenpipe_data_dir().join("enterprise.json");
     let user = if user_path.exists() {
@@ -1097,14 +1098,7 @@ pub fn apply_enterprise_ui_visibility(app: tauri::AppHandle) -> bool {
 #[tauri::command]
 #[specta::specta]
 pub fn get_enterprise_team_api_token() -> Option<String> {
-    let path = screenpipe_core::paths::default_screenpipe_data_dir().join("enterprise.json");
-    let raw = std::fs::read_to_string(&path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    parsed
-        .get("team_api_token")
-        .and_then(|t| t.as_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
+    None
 }
 
 /// Read the user's screenpipe cloud session JWT.
@@ -1120,23 +1114,7 @@ pub fn get_enterprise_team_api_token() -> Option<String> {
 #[tauri::command]
 #[specta::specta]
 pub fn get_cloud_token() -> Option<String> {
-    // #3943: the authoritative token now lives in the encrypted secret store and
-    // is mirrored into an in-process cache at startup + on every `set_cloud_token`.
-    // Prefer that; fall back to the legacy `auth.json` for installs that haven't
-    // migrated yet (and for the pi-agent config flow that still writes it).
-    if let Some(token) = crate::auth_token::cached_cloud_token() {
-        return Some(token);
-    }
-    let path = crate::config::app_data_dir().join("auth.json");
-    let raw = std::fs::read_to_string(&path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    parsed
-        .get("token")
-        .and_then(|t| t.as_str())
-        // The same file historically held the LOCAL api key (`sp-<uuid8>`,
-        // engine auth_key.rs) — never serve a non-JWT value as a cloud login.
-        .filter(|s| crate::auth_token::is_cloud_session_token(s))
-        .map(String::from)
+    None
 }
 
 /// Push a fresh cloud-auth token into the running sidecar.
@@ -1163,91 +1141,14 @@ pub async fn set_cloud_token(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::recording::RecordingState>,
 ) -> Result<(), String> {
-    let supplied_non_empty = token.as_ref().is_some_and(|value| !value.is_empty());
-    let normalized = crate::auth_token::normalize_cloud_token(token);
-    if supplied_non_empty && normalized.is_none() {
-        return Err("invalid_cloud_session_token".to_string());
+    let _ = app;
+    state.cloud_token.store(std::sync::Arc::new(None));
+    crate::auth_token::seed_cloud_token(None);
+    crate::recording::refresh_history_access_policy(&state.history_access);
+    if token.as_deref().is_some_and(|value| !value.is_empty()) {
+        return Err("Screenpipe accounts are not available in this local build".into());
     }
-    let previous_token = state.cloud_token.load_full();
-    let account_changed = match (
-        previous_token.as_deref().and_then(crate::acquisition_handoff::subject),
-        normalized.as_deref().and_then(crate::acquisition_handoff::subject),
-    ) {
-        (Some(previous), Some(next)) => previous != next,
-        _ => previous_token.as_ref() != &normalized,
-    };
-    let should_clear_pi_auth = normalized.is_none();
-    // Unblock cloud calls for THIS session first — the ArcSwap + cache are the
-    // runtime source of truth, so a failed durable write below never breaks an
-    // active sign-in.
-    state
-        .cloud_token
-        .store(std::sync::Arc::new(normalized.clone()));
-
-    // Entering managed mode must stop a personal recording before native
-    // organization/seat verification can grant the new account access.
-    if crate::app_mode::is_managed(&app)
-        && (account_changed || !crate::enterprise_policy::recording_authorized())
-    {
-        crate::enterprise_recording_access::revoke_enterprise_recording(&app).await?;
-    }
-
-    // Sign-out: scrub the screenpipe token from pi's auth files before the
-    // fallible secret-store write so the on-disk copies never outlive the
-    // session even if persistence below fails.
-    if should_clear_pi_auth {
-        state.deferred_account_start.cancel();
-        if let Err(e) = crate::pi::clear_screenpipe_auth_token_files() {
-            warn!("failed to clear pi screenpipe auth token: {}", e);
-        }
-    }
-
-    // `loadUser` writes the fresh plan before calling this command. Refresh the
-    // already-running pipe manager before any fallible persistence.
-    let settings = crate::store::SettingsStore::get(&app).ok().flatten();
-    // Missing/corrupt settings are Unknown, never paid. Keep the non-destructive
-    // cap until positive paid truth is available.
-    let restrict_paid_features = settings
-        .as_ref()
-        .map(|settings| settings.restricts_paid_local_features())
-        .unwrap_or(true);
-    if let Some(settings) = settings.as_ref() {
-        crate::recording::refresh_history_access_policy(&state.history_access, settings);
-    } else {
-        // Missing/corrupt settings are unattributed on consumer builds.
-        state
-            .history_access
-            .set_last_24_hours(!crate::app_mode::is_managed(&app));
-    }
-    let pipe_manager = {
-        let server = state.server.lock().await;
-        server.as_ref().map(|core| core.pipe_manager.clone())
-    };
-    if let Some(pipe_manager) = pipe_manager {
-        let mut pipe_manager = pipe_manager.lock().await;
-        if pipe_manager.set_max_non_template_pipes(restrict_paid_features.then_some(2)) {
-            pipe_manager
-                .load_pipes()
-                .await
-                .map_err(|e| format!("failed to reload pipes after plan change: {e}"))?;
-        }
-    }
-
-    // #3943: persist to the encrypted secret store (authoritative at-rest copy)
-    // and refresh the in-process cache. We surface a persistence failure as an
-    // Err so the frontend won't strip the last plaintext copy of a token it
-    // couldn't durably save (the caller ignores the Result for session purposes;
-    // only the save-and-strip path checks it).
-    let persistence_result = crate::auth_token::store_cloud_token(normalized.as_deref())
-        .await
-        .map_err(|e| format!("failed to persist cloud token to secret store: {e}"));
-    if !should_clear_pi_auth {
-        // `loadUser` calls this after saving verified account data. Both
-        // in-process token caches are now updated, even if persistence failed.
-        // Resume native startup without relying on a frontend gate transition.
-        crate::recording::resume_deferred_account_start(app.clone());
-    }
-    persistence_result
+    Ok(())
 }
 
 /// Persist the user's enterprise admin status, team API token, and the org's
@@ -1272,6 +1173,10 @@ pub fn save_enterprise_team_config(
     team_api_token: Option<String>,
     gateway_url: Option<String>,
 ) -> Result<(), String> {
+    if crate::app_mode::is_local_only() {
+        return Err("Team configuration is not available in this local build".into());
+    }
+
     let dir = screenpipe_core::paths::default_screenpipe_data_dir();
     let path = dir.join("enterprise.json");
     let token_set = team_api_token.is_some();
@@ -1988,6 +1893,9 @@ pub async fn open_login_window(
     fresh_session: Option<bool>,
     auth_mode: Option<LoginMode>,
 ) -> Result<String, String> {
+    if crate::app_mode::is_local_only() {
+        return Err("Screenpipe accounts are not available in this local build".into());
+    }
     let fresh_session = fresh_session.unwrap_or(false);
     #[cfg(target_os = "macos")]
     {
@@ -2996,14 +2904,13 @@ pub async fn complete_onboarding(app_handle: tauri::AppHandle) -> Result<(), Str
         return Ok(());
     }
 
-    // Setup ends at Home. It no longer builds a first Live View, so opening
-    // Brain would land the user on an empty container before anything has been
-    // captured. Home always has something to render, and it is where the
-    // first-run learning window runs and where its summary chat appears.
+    // The native completion owns the destination because closing onboarding
+    // destroys its webview before a frontend route change can reliably finish.
+    // Open the local timeline selected by the personal setup flow.
     show_window(
         app_handle.clone(),
         ShowRewindWindow::Home {
-            page: Some("home".to_string()),
+            page: Some("timeline".to_string()),
         },
     )
     .await
@@ -4548,6 +4455,9 @@ fn register_window_shortcuts_inner(app_handle: tauri::AppHandle) -> Result<(), S
         .on_shortcut(escape_shortcut, |app, _, event| {
             if matches!(event.state, ShortcutState::Pressed) {
                 if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if crate::annotation_capture::route_escape(app) {
+                        return;
+                    }
                     info!("Escape pressed, emitting escape-pressed event");
                     // Target the Main overlay webview explicitly. `app.emit` can be
                     // delivered only to the focused Tauri window; when Home stays

@@ -2,10 +2,8 @@
 // https://screenpipe.com
 "use client";
 
-import { WorkflowSharingControls } from "./workflow-sharing-controls";
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useSettings } from "@/lib/hooks/use-settings";
-import { SHARING_NOTICE_VERSION } from "@/lib/trajectories/collector";
 import { Clock3, Loader2, RefreshCw } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import styles from "./workflow-tasks-prompt.module.css";
@@ -29,7 +27,6 @@ export function WorkflowTasksPrompt({ active, tasks = desktopTasks, backendReady
   const { settings, updateSettings } = useSettings();
   const current = useRef(settings);
   current.current = settings;
-  const [step, setStep] = useState<"tasks" | "sharing">("tasks");
   const title = useRef<HTMLHeadingElement>(null);
   const [open, setOpen] = useState(false);
   const [setup, setSetup] = useState<WorkflowTaskSetup | null>(null);
@@ -42,24 +39,7 @@ export function WorkflowTasksPrompt({ active, tasks = desktopTasks, backendReady
   const failedIntent = useRef<boolean | null>(null);
   failedIntent.current = failedTarget;
 
-  const finishSharing = useCallback(() => {
-    const account = current.current.user?.id;
-    if (account) void updateSettings({ workflowSharingPromptSeen: { ...current.current.workflowSharingPromptSeen, [account]: SHARING_NOTICE_VERSION } }).catch(() => {});
-    setOpen(false);
-  }, [updateSettings]);
-  // Sharing is an optional Workflows choice, independent of scheduled discovery.
-  // Account hydration and workspace entry can happen before the recorder is ready.
-  useEffect(() => {
-    const value = current.current;
-    const account = value.user?.id;
-    setOpen(false);
-    setStep("tasks");
-    if (active && account && value.workflowSharingPromptSeen?.[account] !== SHARING_NOTICE_VERSION) {
-      setStep("sharing");
-      setOpen(true);
-    }
-  }, [active, settings.user?.id]);
-  useEffect(() => { if (open) title.current?.focus(); }, [step, open]);
+  useEffect(() => { if (open) title.current?.focus(); }, [open]);
 
   // Read again on reconnection, returning from Chat, and external task changes.
   // Slow startup must not leave a permanent error after the recorder recovers.
@@ -148,7 +128,7 @@ export function WorkflowTasksPrompt({ active, tasks = desktopTasks, backendReady
           onCheckedChange={enabled => {
             if (!enabled) { void save(false); return; }
             if (!canEnable) { onEnableUnavailable?.(); return; }
-            setError(""); setStep("tasks"); setOpen(true);
+            setError(""); setOpen(true);
           }} />
         {pending && !error && <Loader2 size={13} className={styles.spinner} aria-hidden="true" />}
         </span>
@@ -161,7 +141,7 @@ export function WorkflowTasksPrompt({ active, tasks = desktopTasks, backendReady
     </div>}
     <Dialog open={active && open} onOpenChange={value => {
       if (enabling.current || busy) return;
-      if (!value && step === "sharing") finishSharing(); else setOpen(value);
+      setOpen(value);
     }}>
     <DialogContent onInteractOutside={event => event.preventDefault()} onOpenAutoFocus={event => { event.preventDefault(); title.current?.focus(); }} style={{
       "--foreground": "0 0% 9%", "--background": "0 0% 100%", "--muted-foreground": "80 4% 42%",
@@ -172,18 +152,18 @@ export function WorkflowTasksPrompt({ active, tasks = desktopTasks, backendReady
     } as CSSProperties} className="max-w-md [&_button]:normal-case [&_button]:tracking-normal [&_button]:font-[inherit]" overlayClassName="bg-black/30" hideCloseButton={busy}>
       <DialogHeader className="text-left">
         <DialogTitle ref={title} tabIndex={-1} style={{ fontFamily: "inherit", letterSpacing: 0 }} className="text-xl normal-case outline-none">
-          {step === "tasks" ? "Keep your workflows up to date?" : "Help improve Screenpipe"}
+          Keep your workflows up to date?
         </DialogTitle>
         <DialogDescription className="text-muted-foreground">
-          {step === "tasks" ? "Discover workflows and keep them accurate with automatic updates." : "Share new Workflows chats to improve workflows and train Screenpipe’s own AI models. Never external providers’ models."}
+          Discover workflows and keep them accurate with automatic updates.
         </DialogDescription>
       </DialogHeader>
-      {step === "sharing" ? <WorkflowSharingControls key={settings.user?.id} compact onDone={finishSharing} onBusyChange={setBusy} /> : <>
+      <>
         {setup && <div className="flex items-center gap-3 rounded-lg border p-4">
           <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <div className="min-w-0"><p className="text-sm font-medium">{setup.title}</p><p className="text-xs text-muted-foreground">{setup.schedule} · While Screenpipe is open</p></div>
         </div>}
-        <p className="text-xs text-muted-foreground">Uses your AI allowance. Selected screen text and screenshots go to Screenpipe’s AI provider. Recording exclusions apply; personal content may be included.</p>
+        <p className="text-xs text-muted-foreground">Uses your configured AI model and provider credentials. Selected screen text and screenshots are sent only to that provider. Recording exclusions apply; personal content may be included.</p>
         <details className="text-xs text-muted-foreground"><summary className="cursor-pointer rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground">How automatic updates work</summary>
           <p className="mt-2">Four agents discover workflows, investigate evidence, review drafts, and maintain accuracy. Dependent tasks resume in both Chat and Workflows.</p>
           <p className="mt-2">Turn updates on or off with <span className="font-medium text-foreground">Automatic updates</span> in Workflows. Turning off pauses future scheduled runs; an update already running can finish.</p>
@@ -193,7 +173,7 @@ export function WorkflowTasksPrompt({ active, tasks = desktopTasks, backendReady
           <Button variant="outline" disabled={busy} onClick={() => setOpen(false)}>Not now</Button>
           <Button disabled={busy || !setup} onClick={() => void save(true)}>{busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />} {busy ? ui("Enabling…") : ui("Enable automatic updates")}</Button>
         </DialogFooter>
-      </>}
+      </>
     </DialogContent>
   </Dialog></>;
 }

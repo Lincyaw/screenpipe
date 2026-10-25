@@ -542,17 +542,14 @@ describe("activity history helpers", () => {
     expect(range!.end.getTime() - range!.start.getTime()).toBe(86_400_000);
   });
 
-  it("limits free and unattributed activity ranges while preserving paid ranges", () => {
+  it("preserves full activity ranges regardless of account plan", () => {
     const now = new Date("2026-08-24T12:00:00.000Z");
     const requested = {
       start: new Date("2026-08-17T12:00:00.000Z"),
       end: new Date("2026-08-25T12:00:00.000Z"),
     };
 
-    expect(effectiveActivityRange(requested, null, now)).toEqual({
-      start: new Date("2026-08-23T12:00:00.000Z"),
-      end: now,
-    });
+    expect(effectiveActivityRange(requested, null, now)).toBe(requested);
     expect(
       effectiveActivityRange(requested, mocks.settings.user as any, now),
     ).toBe(requested);
@@ -590,7 +587,10 @@ describe("activity history helpers", () => {
         undefined,
         now,
       ),
-    ).toBeNull();
+    ).toEqual({
+      start: new Date("2026-08-17T12:00:00.000Z"),
+      end: new Date("2026-08-20T12:00:00.000Z"),
+    });
   });
 
   it("does not expand meeting evidence before the restricted access boundary", () => {
@@ -1648,7 +1648,7 @@ describe("ActivityLedger", () => {
     expect(screen.getByLabelText("AI preset")).toBeVisible();
   });
 
-  it("coerces a restricted persisted 7-day range to 24 hours", async () => {
+  it("preserves a 7-day range and custom dates without account information", async () => {
     const originalUser = mocks.settings.user;
     (mocks.settings as any).user = null;
     window.localStorage.setItem("screenpipe:activity-history:range", "7d");
@@ -1657,7 +1657,7 @@ describe("ActivityLedger", () => {
       render(<ActivityLedger />);
 
       const timeRange = await screen.findByRole("combobox", {
-        name: "Time range: Last 24 hours",
+        name: "Time range: Last 7 days",
       });
       fireEvent.click(timeRange);
 
@@ -1668,13 +1668,13 @@ describe("ActivityLedger", () => {
         screen.getByRole("option", { name: "Last 24 hours" }),
       ).toBeVisible();
       expect(
-        screen.queryByRole("option", { name: "Last 7 days" }),
-      ).toBeNull();
+        screen.getByRole("option", { name: "Last 7 days" }),
+      ).toBeVisible();
       expect(
-        screen.queryByRole("option", { name: "Custom range" }),
-      ).toBeNull();
+        screen.getByRole("option", { name: "Custom range" }),
+      ).toBeVisible();
       expect(window.localStorage.getItem("screenpipe:activity-history:range")).toBe(
-        "24h",
+        "7d",
       );
     } finally {
       mocks.settings.user = originalUser;
@@ -2233,15 +2233,15 @@ describe("ActivityLedger", () => {
       "screenpipe://timeline?timestamp=2026-08-17T16%3A00%3A00.000Z",
     );
     expect(
-      screen.getByRole("button", {
+      screen.queryByRole("button", {
         name: "Make skill from Fixed a capture reliability regression",
       }),
-    ).toBeVisible();
+    ).toBeNull();
     expect(
-      screen.getByRole("button", {
+      screen.queryByRole("button", {
         name: "Chat about Fixed a capture reliability regression",
       }),
-    ).toBeVisible();
+    ).toBeNull();
 
     const activityRows = screen.getAllByRole("article");
     for (const noisyLabel of [
@@ -2513,50 +2513,12 @@ describe("ActivityLedger", () => {
     );
   });
 
-  it("can draft a skill from every activity interval", async () => {
+  it("keeps activity evidence available without internal chat actions", async () => {
     render(<ActivityLedger />);
     await generateActivities();
     await screen.findByText("Unblocked a customer's onboarding");
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Make skill from Unblocked a customer's onboarding",
-      }),
-    );
-
-    await waitFor(() =>
-      expect(mocks.showChatWithPrefill).toHaveBeenCalledWith(
-        expect.objectContaining({
-          source: "activity-history-skill",
-          context: expect.stringContaining("frame 67890"),
-          prompt: expect.stringContaining("Draft a focused SKILL.md"),
-        }),
-      ),
-    );
-    expect(mocks.posthogCapture).toHaveBeenCalledWith("activity_skill_clicked");
-  });
-
-  it("can ask about every activity interval in chat", async () => {
-    render(<ActivityLedger />);
-    await generateActivities();
-    await screen.findByText("Unblocked a customer's onboarding");
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Chat about Unblocked a customer's onboarding",
-      }),
-    );
-
-    await waitFor(() =>
-      expect(mocks.showChatWithPrefill).toHaveBeenCalledWith(
-        expect.objectContaining({
-          source: "activity-history-chat",
-          context: expect.stringContaining("frame 67890"),
-          displayLabel: "Ask about “Unblocked a customer's onboarding”",
-          prompt: "Tell me more about this activity.",
-        }),
-      ),
-    );
-    expect(mocks.posthogCapture).toHaveBeenCalledWith("activity_chat_clicked");
+    expect(screen.queryByRole("button", { name: /Make skill from/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Chat about/ })).toBeNull();
+    expect(mocks.showChatWithPrefill).not.toHaveBeenCalled();
   });
 });

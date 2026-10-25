@@ -205,7 +205,7 @@ actor FrameImageLoader {
 final class TimelineViewModel: ObservableObject {
     // Data
     @Published private(set) var frames: [StreamTimeSeriesResponse] = [] {
-        didSet { framesGeneration &+= 1 }
+        didSet { framesGeneration &+= 1; publishAnnotationSource() }
     }
     @Published private(set) var health: HealthStatus?
     @Published private(set) var meetings: [TimelineMeeting] = []
@@ -222,14 +222,14 @@ final class TimelineViewModel: ObservableObject {
     private(set) var tagsGeneration = 0
 
     // Playhead
-    @Published var currentIndex: Int = 0
-    @Published private(set) var currentImage: NSImage?
+    @Published var currentIndex: Int = 0 { didSet { publishAnnotationSource() } }
+    @Published private(set) var currentImage: NSImage? { didSet { publishAnnotationSource() } }
     /// The exact device frame represented by `currentImage`. A time-series row
     /// can contain several monitors, so the row index alone is not enough to
     /// prove the canvas is showing the thumbnail the user clicked.
-    @Published private(set) var currentImageFrameId: String?
+    @Published private(set) var currentImageFrameId: String? { didSet { publishAnnotationSource() } }
     @Published private(set) var preferredFrameId: String?
-    @Published private(set) var isLoadingImage = false
+    @Published private(set) var isLoadingImage = false { didSet { publishAnnotationSource() } }
     /// Set when every tier failed for the current frame. Without this the
     /// canvas spins forever on an unreadable capture instead of saying so.
     @Published private(set) var imageUnavailable = false
@@ -249,8 +249,8 @@ final class TimelineViewModel: ObservableObject {
     @Published private(set) var historyAccessRestricted: Bool
     @Published private(set) var connectionError: String?
     @Published private(set) var isLoading = true
-    @Published private(set) var isNavigating = false
-    @Published private(set) var isResolvingExternalNavigation = false
+    @Published private(set) var isNavigating = false { didSet { publishAnnotationSource() } }
+    @Published private(set) var isResolvingExternalNavigation = false { didSet { publishAnnotationSource() } }
     @Published var showAudioTranscript = false
     @Published var showSubtitles = true
     @Published var activePopoverGroupIndex: Int?
@@ -291,6 +291,8 @@ final class TimelineViewModel: ObservableObject {
     private var playbackWallStart: Date?
     private let audioPlayer = TimelineAudioPlayer()
     private var actionWindowLabel: String?
+    private var lastAnnotationSourcePayload: String?
+    private var annotationNavigationPending = false
     private var imageLoadToken = 0
     private var imageLoadTask: Task<Void, Never>?
     /// Days represented by the current merged frame window, including an
@@ -324,6 +326,69 @@ final class TimelineViewModel: ObservableObject {
 
     func emitAction(_ action: String) {
         TimelineActionBridge.shared.emit(action, windowLabel: actionWindowLabel)
+    }
+
+    /// Only pixels already displayed can become an annotation source. Never
+    /// borrow the playhead row or the previous image while another frame loads.
+    func publishAnnotationSource(force: Bool = false) {
+        guard actionWindowLabel != nil else { return }
+        var payload: [String: Any] = ["source": NSNull()]
+        if !isLoadingImage, !isNavigating, !isResolvingExternalNavigation,
+           currentImage != nil,
+           let frame = displayFrame,
+           let index = displayDeviceIndex,
+           frame.devices.indices.contains(index),
+           currentImageFrameId == frame.devices[index].frameId,
+           let frameId = Int64(frame.devices[index].frameId),
+           frameId > 0, frameId <= 9_007_199_254_740_991,
+           frame.devices[index].machineId?.isEmpty ?? true {
+            let device = frame.devices[index]
+            // The current stream metadata omits its per-device timestamp.
+            // The exact loaded frame id remains authoritative; saving resolves
+            // its immutable timestamp in the database rather than trusting UI time.
+            let timestamp = device.metadata.timestamp.isEmpty ? frame.timestamp : device.metadata.timestamp
+            if !timestamp.isEmpty, TimelineTime.parse(timestamp) != nil {
+                payload["source"] = ["frameId": frameId, "timestamp": timestamp,
+                                     "app": String(device.metadata.appName.prefix(256))]
+            }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8),
+              force || json != lastAnnotationSourcePayload else { return }
+        lastAnnotationSourcePayload = json
+        emitAction("frame_selected:\(json)")
+    }
+
+    /// Owner-authored marks use exact-id navigation without creating search
+    /// review state. The React host acknowledges only a loaded matching image.
+    func navigateToAnnotationSource(frameId: String, timestamp: Date) {
+        pause()
+        exitSearchReview()
+        annotationNavigationPending = true
+        filters.reset()
+        if currentImage != nil, !isLoadingImage, currentImageFrameId == frameId,
+           displayFrameId == frameId {
+            cancelExternalNavigation()
+            publishAnnotationSource(force: true)
+            return
+        }
+        beginExternalNavigation(superseding: true)
+        if let index = TimelineNavigation.index(ofFrameId: frameId, in: frames) {
+            preferredFrameId = frameId
+            setExternalNavigationIndex(index)
+        } else {
+            pendingSearchNavigation = (frameId: frameId, timestamp: timestamp)
+            changeDate(to: timestamp, supersedePendingNavigation: true,
+                       preservePendingSearchNavigation: true)
+            requestSearchWindow(around: timestamp)
+        }
+    }
+
+    func cancelAnnotationSourceNavigation() {
+        guard annotationNavigationPending else { return }
+        pendingSearchNavigation = nil
+        annotationNavigationPending = false
+        cancelExternalNavigation()
     }
 
     // The scrubber redraws on every scrub tick and every smooth-zoom frame.
@@ -627,6 +692,7 @@ final class TimelineViewModel: ObservableObject {
                 currentIndex = index
                 pendingSearchNavigation = nil
                 resolvedPendingSearch = true
+                if isResolvingExternalNavigation { externalNavigationHasSelectedTarget = true }
             } else if pending.frameId == nil,
                       let index = TimelineNavigation.indexNearest(pending.timestamp, in: frames) {
                 preferredFrameId = nil
@@ -1111,6 +1177,8 @@ final class TimelineViewModel: ObservableObject {
     }
 
     private func finishExternalNavigation(reloadCurrentFrame: Bool = false) {
+        if annotationNavigationPending { pendingSearchNavigation = nil }
+        annotationNavigationPending = false
         externalNavigationHasSelectedTarget = false
         isResolvingExternalNavigation = false
         if reloadCurrentFrame, currentImage == nil, displayFrame != nil, !isLoadingImage {
@@ -1185,7 +1253,10 @@ final class TimelineViewModel: ObservableObject {
             historyAccessRestricted: historyAccessRestricted
         ) else { return }
         navigationGeneration += 1
-        if !preservePendingSearchNavigation { pendingSearchNavigation = nil }
+        if !preservePendingSearchNavigation {
+            pendingSearchNavigation = nil
+            annotationNavigationPending = false
+        }
         let generation = navigationGeneration
         isNavigating = true
         pause()

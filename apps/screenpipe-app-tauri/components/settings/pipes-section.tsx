@@ -1190,7 +1190,7 @@ export function PipesSection() {
   const { isManagedDeployment } = useManagedPolicy();
   // The user-owned cloud-agent runner is an early rollout. Fail closed while
   // PostHog is unresolved so the normal on-device runner remains the default.
-  const cloudAgentRunnerEnabled = useCloudAgentRunnerRolloutEnabled();
+  const cloudAgentRunnerEnabled = false;
   // Favorites — per-machine preference persisted via /pipes/favorites.
   // `showOnly` toggles a filter that hides non-starred pipes.
   const pipeFavorites = usePipeFavorites();
@@ -2557,31 +2557,6 @@ export function PipesSection() {
               autoCorrect="off"
             />
           </div>
-          {isManagedDeployment && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs capitalize">
-                  {pipeTypeFilter === "cloud" ? ui("Cloud") : `${pipeTypeFilter} (${tabCounts.local})`}
-                  <ChevronDown className="h-3 w-3 opacity-50" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {(["local", "cloud"] as const).map((tab) => (
-                  <DropdownMenuItem
-                    key={tab}
-                    onClick={() => setPipeTypeFilter(tab)}
-                    className={cn("capitalize gap-2", pipeTypeFilter === tab && "font-medium")}
-                  >
-                    <span className="flex-1">{tab}</span>
-                    {tab === "local" && (
-                      <span className="text-muted-foreground text-xs">{tabCounts.local}</span>
-                    )}
-                    {pipeTypeFilter === tab && <Check className="h-3.5 w-3.5 ml-1" />}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
           <Button
             variant="outline"
             size="icon"

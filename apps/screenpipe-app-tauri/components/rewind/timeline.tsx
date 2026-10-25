@@ -9,7 +9,7 @@ import { Loader2, RotateCcw, AlertCircle, X, Sparkles, ExternalLink, MonitorOff,
 import { SearchModal } from "@/components/rewind/search-modal";
 import { commands } from "@/lib/utils/tauri";
 import { listen, emit } from "@tauri-apps/api/event";
-import { showChatWithPrefill } from "@/lib/chat-utils";
+
 import { AudioTranscript } from "@/components/rewind/timeline/audio-transcript";
 import { SubtitleBar } from "@/components/rewind/timeline/subtitle-bar";
 import { TimelineProvider, useTimelineSelection } from "@/lib/hooks/use-timeline-selection";
@@ -24,9 +24,7 @@ import { SearchResultStrip } from "@/components/rewind/search-result-strip";
 import { useMeetings } from "@/lib/hooks/use-meetings";
 import { useTimelineStore } from "@/lib/hooks/use-timeline-store";
 import { shiftIndexForPrependedFrames } from "@/lib/hooks/timeline-live-edge";
-import {
-	findTimelineDisplayFrame,
-} from "@/lib/hooks/timeline-frame-navigation";
+import { findTimelineDisplayFrame } from "@/lib/hooks/timeline-frame-navigation";
 import { findNearestDateWithFrames } from "@/lib/actions/has-frames-date";
 import { CurrentFrameTimeline } from "@/components/rewind/current-frame-timeline";
 import { useSearchHighlight } from "@/lib/hooks/use-search-highlight";
@@ -35,7 +33,7 @@ import { usePlatform } from "@/lib/hooks/use-platform";
 import { useAudioPlayback } from "@/lib/hooks/use-audio-playback";
 import { useHealthCheck } from "@/lib/hooks/use-health-check";
 import { useSettings } from "@/lib/hooks/use-settings";
-import { usePipes, type TemplatePipe } from "@/lib/hooks/use-pipes";
+
 import type { FrameLoadSuccessDetails } from "@/components/rewind/hooks/use-frame-loading";
 
 import posthog from "posthog-js";
@@ -48,12 +46,12 @@ import { localFetch } from "@/lib/api";
 import { hydrateSearchResultNavigation } from "@/lib/search-result-navigation";
 import type { AppUser } from "@/lib/app-entitlement";
 import { useEnterpriseBuildStatus } from "@/lib/hooks/use-is-enterprise-build";
-import {
-	shouldRestrictTimelineHistory,
-	useAuthoritativeTimelineHistoryAccess,
-} from "@/lib/hooks/use-timeline-cache";
+import { shouldRestrictTimelineHistory, useAuthoritativeTimelineHistoryAccess } from "@/lib/hooks/use-timeline-cache";
 import { useGT, useMessages } from "gt-react";
 import { useUiLocale } from "@/lib/i18n/provider";
+import { MemoryTools } from "@/components/explicit-memory/memory-tools";
+import { findMarkedFrame } from "@/lib/explicit-memory";
+import { selectTimelineDevice } from "@/lib/hooks/timeline-playback-navigation";
 
 
 export interface StreamTimeSeriesResponse {
@@ -125,6 +123,8 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 	const [currentIndex, setCurrentIndex] = useState(0);
 	const [showAudioTranscript, setShowAudioTranscript] = useState(false);
 	const [showSearchModal, setShowSearchModal] = useState(false);
+	const [annotationFrameId, setAnnotationFrameId] = useState<number | null>(null);
+	const annotationCompletionRef = useRef<{ resolve(): void; reject(error: Error): void } | null>(null);
 
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const navBarRef = useRef<HTMLDivElement | null>(null);
@@ -197,7 +197,6 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 
 	// Get timeline selection for chat context
 	const { selectionRange, loadTagsForFrames, tags } = useTimelineSelection();
-	const { promptPipes } = usePipes();
 
 	// Load tags when a selection is made (lazy-load)
 	useEffect(() => {
@@ -599,6 +598,39 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 		await navigateDirectToDate(targetDate);
 	}, [currentDate, frames, jumpToTime, navigateDirectToDate, pausePlayback]); // eslint-disable-line react-hooks/exhaustive-deps
 
+	// Annotation navigation resolves the exact frame after the day's data arrives.
+	// Never silently replace a marked frame with the nearest captured moment.
+	useEffect(() => {
+		if (annotationFrameId === null) return;
+		const match = findMarkedFrame(frames, annotationFrameId);
+		if (!match) return;
+		resetFilters();
+		handleDeviceChange(match.device.device_id);
+		setCurrentIndex(match.index);
+		setCurrentFrame(match.frame);
+		setHighlight(["Saved annotation"], annotationFrameId);
+		setSearchNavFrame(true);
+		setAnnotationFrameId(null);
+		annotationCompletionRef.current?.resolve();
+		annotationCompletionRef.current = null;
+	}, [annotationFrameId, frames, resetFilters, handleDeviceChange, setCurrentFrame, setHighlight]);
+
+	useEffect(() => {
+		if (annotationFrameId === null) return;
+		const timer = setTimeout(() => {
+			setAnnotationFrameId(null);
+			annotationCompletionRef.current?.reject(new Error("Exact source frame unavailable"));
+			annotationCompletionRef.current = null;
+			toast({ title: ui("Source frame unavailable"), description: ui("Open the saved annotation to inspect its retained evidence.") });
+		}, 15000);
+		return () => clearTimeout(timer);
+	}, [annotationFrameId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+	useEffect(() => () => {
+		annotationCompletionRef.current?.reject(new Error("Source navigation interrupted"));
+		annotationCompletionRef.current = null;
+	}, []);
+
 	// Listen for navigate-to-timestamp events from search window / deep links
 	useEffect(() => {
 		const unlisten = listen<string>("navigate-to-timestamp", async (event) => {
@@ -839,90 +871,6 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 		}
 	}, [currentFrame]);
 
-	// Send timeline selection context to chat (optionally with a specific pipe)
-	const sendSelectionToChat = useCallback(async (pipe?: TemplatePipe) => {
-		if (!selectionRange) return;
-
-		const startTime = selectionRange.start.toLocaleString(uiLocale);
-		const endTime = selectionRange.end.toLocaleString(uiLocale);
-
-		// Get OCR/audio context from frames in the selection range
-		const selectedFrames = frames.filter((frame) => {
-			const frameTime = new Date(frame.timestamp).getTime();
-			return (
-				frameTime >= selectionRange.start.getTime() &&
-				frameTime <= selectionRange.end.getTime()
-			);
-		});
-
-		// Build context string
-		const contextParts: string[] = [];
-		contextParts.push(`Time range: ${startTime} - ${endTime}`);
-
-		// Add app names
-		const apps = new Set<string>();
-		selectedFrames.forEach((frame) => {
-			frame.devices.forEach((device) => {
-				if (device.metadata.app_name) {
-					apps.add(device.metadata.app_name);
-				}
-			});
-		});
-		if (apps.size > 0) {
-			contextParts.push(`Apps: ${Array.from(apps).join(", ")}`);
-		}
-
-		// Add sample frame text (first few frames)
-		const ocrSamples: string[] = [];
-		selectedFrames.slice(0, 3).forEach((frame) => {
-			frame.devices.forEach((device) => {
-				const frameText = device.metadata.text ?? device.metadata.ocr_text;
-				if (frameText && frameText.length > 0) {
-					const sample = frameText.slice(0, 200);
-					if (sample.trim()) {
-						ocrSamples.push(sample);
-					}
-				}
-			});
-		});
-		if (ocrSamples.length > 0) {
-			contextParts.push(`Screen text samples:\n${ocrSamples.join("\n---\n")}`);
-		}
-
-		// Add audio transcriptions if any
-		const audioSamples: string[] = [];
-		selectedFrames.slice(0, 3).forEach((frame) => {
-			frame.devices.forEach((device) => {
-				device.audio?.forEach((audio) => {
-					if (audio.transcription && audio.transcription.trim()) {
-						audioSamples.push(audio.transcription.slice(0, 200));
-					}
-				});
-			});
-		});
-		if (audioSamples.length > 0) {
-			contextParts.push(`Audio transcriptions:\n${audioSamples.join("\n---\n")}`);
-		}
-
-		const context = contextParts.join("\n\n");
-
-		// Open chat window and deliver prefill reliably (handles fresh webview creation)
-		if (pipe) {
-			await showChatWithPrefill({ context, prompt: pipe.prompt, autoSend: true });
-		} else {
-			await showChatWithPrefill({ context, prompt: `Based on my activity from ${startTime} to ${endTime}, `, source: "timeline" });
-		}
-
-		posthog.capture("timeline_selection_to_chat", {
-			selection_duration_ms: selectionRange.end.getTime() - selectionRange.start.getTime(),
-			frames_in_selection: selectedFrames.length,
-			pipe_name: pipe?.name,
-		});
-
-		if (pipe) {
-			toast({ title: ui("{value1} {value2}", { value1: pipe.icon, value2: pipe.title }), description: ui("Running scheduled task with selection context") });
-		}
-	}, [selectionRange, frames, uiLocale]);
 
 	// Wrapper that opens search in separate window (fullscreen) or inline modal (embedded)
 	const openSearch = useCallback((v: boolean) => {
@@ -960,7 +908,6 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 		arrowNavTimerRef,
 		resetFilters,
 		selectionRange,
-		sendSelectionToChat,
 		selectedDeviceIdRef,
 		selectedAppNameRef,
 	});
@@ -1396,6 +1343,34 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 				{!embedded && <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-black/10 via-black/2 to-transparent z-30 pointer-events-none" />}
 
 				{/* Top Controls */}
+				<div className="absolute right-4 top-16 z-40" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
+					<MemoryTools
+						source={(() => {
+							const highlighted = hasSearchHighlight && highlightFrameId !== null
+								? visualFrame?.devices.find((item) => Number(item.frame_id) === highlightFrameId)
+								: undefined;
+							const device = highlighted ?? selectTimelineDevice(visualFrame?.devices, selectedDeviceId);
+							const frameId = Number(device?.frame_id);
+							if (!device || device.machine_id || !Number.isSafeInteger(frameId) || frameId < 1 || !visualFrame) return null;
+							return { frameId, timestamp: visualFrame.timestamp, app: device.metadata.app_name, text: device.metadata.text };
+						})()}
+						onOpenSource={(mark) => {
+							if (mark.frame_id === null) throw new Error("Source unavailable");
+							pausePlayback();
+							return new Promise<void>((resolve, reject) => {
+								annotationCompletionRef.current?.reject(new Error("Source navigation superseded"));
+								annotationCompletionRef.current = { resolve, reject };
+								setAnnotationFrameId(mark.source_frame_id);
+								void navigateToTimestamp(mark.source_timestamp).catch(() => {
+									annotationCompletionRef.current?.reject(new Error("Source navigation failed"));
+									annotationCompletionRef.current = null;
+									setAnnotationFrameId(null);
+								});
+							});
+						}}
+					/>
+				</div>
+				{annotationFrameId !== null && <div className="absolute inset-0 z-50 flex items-center justify-center bg-background" role="status">Opening exact source frame…</div>}
 				<div ref={navBarRef} className={`absolute top-0 left-0 right-0 z-40 px-4 pb-4 ${embedded ? "pt-2" : "pt-[calc(env(safe-area-inset-top)+16px)]"}`}>
 					<TimelineControls
 						currentDate={currentDate}
@@ -1414,7 +1389,6 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 								? undefined
 								: () => commands.showWindow({ Search: { query: null } })
 						}
-						onChatClick={embedded ? undefined : () => commands.showWindow("Chat")}
 						embedded={embedded}
 						isPlaying={isPlaying}
 						playbackSpeed={playbackSpeed}
@@ -1660,9 +1634,6 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 							zoomLevel={zoomLevel}
 							targetZoom={targetZoom}
 							setTargetZoom={setTargetZoom}
-							onAskAI={() => sendSelectionToChat()}
-							onRunPipe={(pipe) => sendSelectionToChat(pipe)}
-							templatePipes={promptPipes}
 							isPlaying={isPlaying}
 							onTogglePlayPause={togglePlayPause}
 							selectedDeviceId={selectedDeviceId}

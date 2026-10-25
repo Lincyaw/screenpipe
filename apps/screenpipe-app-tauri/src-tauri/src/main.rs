@@ -211,6 +211,7 @@ mod native_overlay_win;
 mod notifications;
 mod safe_icon;
 mod shortcuts;
+mod annotation_capture;
 mod skills;
 mod grokbot;
 // Binding generation runs from `cargo test` (`bun run bindings:generate` /
@@ -286,7 +287,7 @@ fn should_skip_onboarding() -> bool {
 }
 
 fn should_prevent_window_close(label: &str) -> bool {
-    label != "onboarding"
+    !matches!(label, "onboarding" | "annotation-capture")
 }
 
 #[cfg(target_os = "macos")]
@@ -976,10 +977,10 @@ async fn main() {
     // inside `.setup()`: a `block_on` there nests runtimes under
     // #[tokio::main] and panics ("Cannot start a runtime from within a
     // runtime"), killing the app at launch.
-    let initial_cloud_token = crate::auth_token::migrate_plaintext_token(
-        crate::config::app_data_dir(),
-    )
-    .await;
+    // Screenpipe accounts are absent from this personal local build. Never
+    // hydrate a legacy cloud credential into the recorder or agent runtime.
+    crate::auth_token::seed_cloud_token(None);
+    let initial_cloud_token: Option<String> = None;
 
     let recording_state = RecordingState {
         server_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
@@ -1040,12 +1041,15 @@ async fn main() {
                 });
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                // Onboarding is disposable. Let Tauri destroy its webview so
+                if window.label() == "annotation-capture" {
+                    crate::annotation_capture::prepare_close(window.app_handle());
+                }
+                // Onboarding and the annotation editor are disposable. Destroy their webviews so
                 // page effects (notably the live-feed search poller) are torn
                 // down as soon as the user closes the window. Other app
                 // windows stay warm for fast reopen and NSPanel safety.
                 if !should_prevent_window_close(window.label()) {
-                    info!("onboarding window close requested — destroying webview");
+                    info!("disposable window close requested — destroying webview");
                     return;
                 }
 
@@ -1514,7 +1518,6 @@ async fn main() {
 
             crate::recording::refresh_history_access_policy(
                 &app.state::<RecordingState>().history_access,
-                &store,
             );
 
             // Set Chinese HuggingFace mirror early — before any model downloads
@@ -1584,7 +1587,7 @@ async fn main() {
             // Enterprise builds can identify org/device health in Sentry and
             // PostHog without sending the raw license key. No-op on consumer
             // builds; explicit MDM/support env vars still win when provided.
-            enterprise_sync::configure_telemetry_context(&app_handle);
+            // No account or organization telemetry in the local build.
 
             // Attach non-sensitive settings to all future Sentry events
             if !telemetry_disabled {
@@ -1952,11 +1955,14 @@ async fn main() {
                 // spawn_screenpipe command. DB-wedge recovery consults this
                 // shared flag so it can rebuild the server without silently
                 // leaving a normally auto-started recording paused.
-                let capture_allowed =
-                    crate::recording::recording_access_allowed(&app_handle, &store_clone);
+                // Fresh installs start only the read server until the user
+                // explicitly chooses capture in onboarding. Existing completed
+                // installs keep their saved recording preferences.
+                let capture_allowed = onboarding_store.is_completed
+                    && crate::recording::recording_access_allowed(&app_handle, &store_clone);
                 recording_state.set_capture_intent(capture_allowed);
                 if !capture_allowed {
-                    info!("Starting local read server without capture for trial activation");
+                    info!("Starting local read server while awaiting explicit capture choice");
                 }
                 // Reserve the lifecycle slot before publishing is_starting or
                 // spawning the OS thread. Otherwise a frontend spawn can win
@@ -2343,7 +2349,7 @@ async fn main() {
             ))]
             enterprise_autostart::spawn(&app_handle);
 
-            acquisition_handoff::spawn(app_handle.clone());
+            // Screenpipe account acquisition handoff is absent in local mode.
 
             // Use persistent analytics_id for PostHog (consistent across frontend and backend)
             let unique_id = store.recording.analytics_id.clone();
@@ -2409,8 +2415,6 @@ async fn main() {
             crate::db_recovery_notifications::start(app_handle.clone());
             crate::disk_pressure_notifications::start(app_handle.clone());
             activity_history::start(app_handle.clone());
-            first_run_summary::start(app_handle.clone());
-            notifications::workflow::start(app_handle.clone());
 
             // Background ChatGPT OAuth token refresh — keeps access tokens
             // fresh so the lazy path in get_valid_token() rarely needs to
@@ -2425,10 +2429,8 @@ async fn main() {
             // The app stays in Regular mode permanently so dock+tray are always visible.
 
             // Initialize global shortcuts
-            // TODO(linux): When a shortcut is already registered (e.g. by the DE or another
-            // instance), apply_shortcuts early-returns and skips the rest. Fix this to:
-            // 1. Collect per-shortcut failures instead of aborting on the first one
-            // 2. Emit a user-visible notification listing the conflicting shortcuts
+            // Register each chord independently so an OS conflict cannot
+            // prevent recording controls or annotations from being registered.
             if app_ui_hidden {
                 // With windows torn down, the tray is the only pause affordance.
                 // Only when the admin ALSO suppresses the tray does the app have
@@ -2460,47 +2462,6 @@ async fn main() {
                 });
             }
 
-            // Auto-start suggestions scheduler (always on)
-            let suggestions_state = app_handle.state::<suggestions::SuggestionsState>();
-            // Initialize enhanced AI config from saved settings
-            {
-                if let Ok(Some(store)) = crate::store::SettingsStore::get(&app_handle) {
-                    if store.enhanced_ai {
-                        // #3943: the token no longer persists in store.bin —
-                        // fall back to the secret-store-backed cache.
-                        let token = store
-                            .user
-                            .token
-                            .clone()
-                            .filter(|t| !t.is_empty())
-                            .or_else(crate::auth_token::cached_cloud_token)
-                            .unwrap_or_default();
-                        if !token.is_empty() {
-                            // Use try_lock — blocking_lock panics inside a tokio runtime context
-                            if let Ok(mut guard) = suggestions_state.enhanced_ai.try_lock() {
-                                *guard = Some(suggestions::EnhancedAIConfig {
-                                    enabled: true,
-                                    token,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            let suggestions_state_clone = suggestions::SuggestionsState {
-                cache: suggestions_state.cache.clone(),
-                scheduler_handle: suggestions_state.scheduler_handle.clone(),
-                enhanced_ai: suggestions_state.enhanced_ai.clone(),
-            };
-            let app_handle_for_suggestions = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                suggestions::auto_start_scheduler(
-                    app_handle_for_suggestions,
-                    &suggestions_state_clone,
-                )
-                .await;
-            });
-
             // Start calendar events publisher (publishes to event bus for meeting detection)
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
@@ -2522,35 +2483,8 @@ async fn main() {
                 google_calendar::start_google_calendar_publisher(gcal_app_handle).await;
             });
 
-            // Enterprise telemetry sync (no-op stub on consumer builds).
-            // Runs forever in background; only takes effect on enterprise-
-            // telemetry builds with SCREENPIPE_ENTERPRISE_LICENSE_KEY env set.
-            let _enterprise_shutdown_tx = enterprise_sync::spawn(&app_handle);
-
-            // Account data sync. Runtime eligibility keeps customer-managed
-            // Enterprise accounts out while allowing Screenpipe's own org.
-            data_sync::spawn(&app_handle);
-
-            // Personal mode uses authenticated support-log consent. Managed
-            // mode uses the license-authenticated collector above.
-            remote_support_logs::spawn(&app_handle);
-
-            // Disable removed Storage cloud backends if old settings enabled them.
-            let app_handle_clone = app_handle.clone();
-            let sync_state = app_handle.state::<sync::SyncState>();
-            let sync_state_clone = sync::SyncState {
-                enabled: sync_state.enabled.clone(),
-                is_syncing: sync_state.is_syncing.clone(),
-                last_sync: sync_state.last_sync.clone(),
-                last_error: sync_state.last_error.clone(),
-                manager: sync_state.manager.clone(),
-                machine_id: sync_state.machine_id.clone(),
-            };
-            tauri::async_runtime::spawn(async move {
-                // Wait for server to be ready
-                tokio::time::sleep(tokio::time::Duration::from_secs(12)).await;
-                sync::auto_start_sync(&app_handle_clone, &sync_state_clone).await;
-            });
+            // Screenpipe account/team sync and remote support collection are
+            // absent. Local retention below remains independently enabled.
 
             // Disable removed Storage archive backend if old settings enabled it.
             let app_handle_clone = app_handle.clone();
@@ -2658,7 +2592,9 @@ async fn main() {
                     // launch runs the new version. Restart paths install in
                     // force_app_relaunch; this call is idempotent with that.
                     #[cfg(target_os = "macos")]
-                    staged_update::install_staged_if_any(app_handle.app_handle());
+                    if !crate::app_mode::is_local_only() {
+                        staged_update::install_staged_if_any(app_handle.app_handle());
+                    }
 
                     if process_exit::PENDING_RESTART.load(std::sync::atomic::Ordering::SeqCst) {
                         info!("Restart pending — spawning replacement and force-exiting");

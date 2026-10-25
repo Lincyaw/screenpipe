@@ -462,6 +462,7 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     /// the native child are asynchronous, so a click can arrive before the
     /// addressed model exists. Keep the newest click per host until attach.
     private static var pendingSearchNavigation: [String: TimelineSearchNavigationRequest] = [:]
+    private static var pendingAnnotationNavigation: [String: (frameId: String, timestamp: Date)] = [:]
 
     private static func navigationLabelKey(_ label: String) -> String {
         label == "main-window" ? "main" : label
@@ -532,13 +533,31 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
         _ request: TimelineSearchNavigationRequest,
         windowLabel: String?
     ) -> Bool {
+        if let windowLabel { pendingAnnotationNavigation.removeValue(forKey: navigationLabelKey(windowLabel)) }
         if let model = model(forWindowLabel: windowLabel) {
+            model.cancelAnnotationSourceNavigation()
             request.apply(to: model)
             return true
         }
         guard let windowLabel, !windowLabel.isEmpty else { return false }
         pendingSearchNavigation[navigationLabelKey(windowLabel)] = request
         return false
+    }
+
+    static func routeAnnotationNavigation(frameId: String, timestamp: Date, windowLabel: String) {
+        pendingSearchNavigation.removeValue(forKey: navigationLabelKey(windowLabel))
+        if let model = model(forWindowLabel: windowLabel) {
+            model.navigateToAnnotationSource(frameId: frameId, timestamp: timestamp)
+        } else {
+            // Dialogs temporarily detach the child. Keep the newest exact
+            // request for this host until its replacement model is attached.
+            pendingAnnotationNavigation[navigationLabelKey(windowLabel)] = (frameId, timestamp)
+        }
+    }
+
+    static func cancelAnnotationNavigation(windowLabel: String) {
+        pendingAnnotationNavigation.removeValue(forKey: navigationLabelKey(windowLabel))
+        model(forWindowLabel: windowLabel)?.cancelAnnotationSourceNavigation()
     }
 
     /// Native pill actions share one model entry point with the feature-gated
@@ -872,6 +891,11 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
         model.start()
         model.setActionWindowLabel(hostWindowLabel)
         Self.deliverPendingSearchNavigation(to: model, windowLabel: hostWindowLabel)
+        if let hostWindowLabel,
+           let pending = Self.pendingAnnotationNavigation.removeValue(forKey: Self.navigationLabelKey(hostWindowLabel)) {
+            model.navigateToAnnotationSource(frameId: pending.frameId, timestamp: pending.timestamp)
+        }
+        model.publishAnnotationSource(force: true)
         originChrome.setActivityReturnVisible(showActivityReturn)
         if showNavigationLoading {
             model.beginExternalNavigation()
@@ -1308,6 +1332,19 @@ public func timeline_navigate(_ json: UnsafePointer<CChar>?) -> Int32 {
         let windowLabel = obj["windowLabel"] as? String
         let frameId = obj["frameId"] as? String
         let rawTimestamp = obj["timestamp"] as? String
+        if let windowLabel, obj["annotationSourceCancel"] as? Bool == true {
+            TimelineWindowController.cancelAnnotationNavigation(windowLabel: windowLabel)
+            return 0
+        }
+        if let windowLabel, obj["requestSource"] as? Bool == true {
+            TimelineWindowController.model(forWindowLabel: windowLabel)?.publishAnnotationSource(force: true)
+            return 0
+        }
+        if let windowLabel, obj["annotationSource"] as? Bool == true,
+           let frameId, let rawTimestamp, let timestamp = TimelineTime.parse(rawTimestamp) {
+            TimelineWindowController.routeAnnotationNavigation(frameId: frameId, timestamp: timestamp, windowLabel: windowLabel)
+            return 0
+        }
         if let windowLabel,
            let rawTimestamp,
            let timestamp = TimelineTime.parse(rawTimestamp) {

@@ -149,7 +149,7 @@ export const useOnboarding = create<OnboardingState>((set, get) => ({
           context.method === "ai_connections_selected"
             ? "connections"
             : context.method === "setup_finished"
-              ? "home"
+              ? "timeline"
               : "brain";
         // Rust routes a newly created Home to Brain. This covers a reused Home
         // and sends the explicit AI-context path to Connections instead.

@@ -4,32 +4,22 @@
 import { StreamTimeSeriesResponse } from "@/components/rewind/timeline";
 import React, { FC, useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useFrameContext } from "@/lib/hooks/use-frame-context";
-import {
-	type TextPosition,
-	useFrameTextData,
-} from "@/lib/hooks/use-frame-text-data";
+import { type TextPosition, useFrameTextData } from "@/lib/hooks/use-frame-text-data";
 import { usePlatform } from "@/lib/hooks/use-platform";
 import { formatShortcutDisplay } from "@/lib/chat-utils";
 import { TextOverlay, extractUrlsFromText, isUrl, normalizeUrl } from "@/components/text-overlay";
 import { SelectableTextLayer, getSelectableLayerText, clearSelectableLayerSelection } from "@/components/selectable-text-layer";
-import { RegionOcrOverlay } from "@/components/rewind/region-ocr-overlay";
 import { useSearchHighlight } from "@/lib/hooks/use-search-highlight";
 import { useSettings } from "@/lib/hooks/use-settings";
-import { ImageOff, ChevronLeft, ChevronRight, Copy, ImageIcon, Link2, MessageCircle, Type } from "lucide-react";
-import { usePipes } from "@/lib/hooks/use-pipes";
+import { ImageOff, ChevronLeft, ChevronRight, Copy, ImageIcon, Link2, Type } from "lucide-react";
+import { type TemplatePipe } from "@/lib/hooks/use-pipes";
 import { toast } from "@/components/ui/use-toast";
-import {
-	type FrameLoadSuccessDetails,
-	useFrameLoading,
-} from "@/components/rewind/hooks/use-frame-loading";
+import { type FrameLoadSuccessDetails, useFrameLoading } from "@/components/rewind/hooks/use-frame-loading";
 import { useLiveText } from "@/components/rewind/hooks/use-live-text";
 import { useFrameActions } from "@/components/rewind/hooks/use-frame-actions";
 import { commands } from "@/lib/utils/tauri";
 import { selectTimelineDevice } from "@/lib/hooks/timeline-playback-navigation";
-import {
-	type SearchMatch,
-	useKeywordSearchStore,
-} from "@/lib/hooks/use-keyword-search-store";
+import { type SearchMatch, useKeywordSearchStore } from "@/lib/hooks/use-keyword-search-store";
 import { useGT } from "gt-react";
 
 
@@ -160,7 +150,7 @@ export const CurrentFrameTimeline: FC<CurrentFrameTimelineProps> = ({
   const ui = useGT();
 	const { isMac } = usePlatform();
 	const { settings } = useSettings();
-	const { templatePipes } = usePipes();
+	const templatePipes: TemplatePipe[] = [];
 	const {
 		highlightTerms,
 		highlightFrameId,
@@ -349,7 +339,7 @@ export const CurrentFrameTimeline: FC<CurrentFrameTimelineProps> = ({
 	useEffect(() => { onUrlsDetected?.(detectedUrls); }, [detectedUrls, onUrlsDetected]);
 
 	// --- Frame actions hook (copy image, text, deeplink, ask, run pipe) ---
-	const { copyImage, copyFrameText, copyDeeplinkAction, askAboutFrame, runPipeWithContext } = useFrameActions({
+	const { copyImage, copyFrameText, copyDeeplinkAction } = useFrameActions({
 		debouncedFrame,
 		frameContext,
 		textPositions,
@@ -628,39 +618,7 @@ export const CurrentFrameTimeline: FC<CurrentFrameTimelineProps> = ({
 						<Link2 className="w-4 h-4 shrink-0" />
 						Copy deeplink
 					</button>
-					<button
-						type="button"
-						className="block w-full text-left px-3 py-2 -my-px first:mt-0 last:mb-0 border-0 outline-none ring-0 bg-transparent hover:bg-foreground hover:text-background text-foreground flex items-center gap-2 cursor-pointer transition-colors duration-150"
-						onClick={() => {
-							askAboutFrame();
-							setContextMenuOpen(false);
-						}}
-					>
-						<MessageCircle className="w-4 h-4 shrink-0" />
-						Ask about this frame
-					</button>
-					{templatePipes.length > 0 && (
-						<>
-							<div className="h-px bg-border/30 my-0.5" />
-							<div className="px-3 py-1 text-[10px] text-muted-foreground normal-case tracking-wider">
-								Run scheduled task
-							</div>
-							{templatePipes.map((pipe) => (
-								<button
-									key={pipe.name}
-									type="button"
-									className="block w-full text-left px-3 py-1.5 -my-px border-0 outline-none ring-0 bg-transparent hover:bg-foreground hover:text-background text-foreground flex items-center gap-2 cursor-pointer transition-colors duration-150"
-									onClick={() => {
-										runPipeWithContext(pipe);
-										setContextMenuOpen(false);
-									}}
-								>
-									<span className="w-4 h-4 shrink-0 text-center text-xs leading-4">{pipe.icon}</span>
-									<span className="truncate">{pipe.title}</span>
-								</button>
-							))}
-						</>
-					)}
+
 				</div>
 			)}
 
@@ -753,13 +711,6 @@ export const CurrentFrameTimeline: FC<CurrentFrameTimelineProps> = ({
 				</div>
 			)}
 
-			{/* Shift+drag region OCR — always mount so shift key listener is active */}
-			<RegionOcrOverlay
-				frameId={debouncedFrame?.frameId ?? null}
-				renderedImageInfo={renderedImageInfo}
-				naturalDimensions={naturalDimensions}
-				userToken={settings.user?.token ?? null}
-			/>
 
 		</div>
 	);

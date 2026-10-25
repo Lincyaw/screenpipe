@@ -167,7 +167,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useSqlAutocomplete } from "@/lib/hooks/use-sql-autocomplete";
 import * as Sentry from "@sentry/react";
 import { defaultOptions } from "tauri-plugin-sentry-api";
-import { useLoginDialog } from "../login-dialog";
 import { BatterySaverSection } from "./battery-saver-section";
 import { ApplyRestartBar } from "./apply-restart-bar";
 // ScheduleSettings moved to privacy-section
@@ -1925,7 +1924,6 @@ export function RecordingSettings({ section }: { section: RecordingSettingsSecti
   const [isTestingOpenAICompatible, setIsTestingOpenAICompatible] = useState(false);
   const [openAICompatibleTestError, setOpenAICompatibleTestError] = useState<string | null>(null);
   const [isRefreshingSubscription, setIsRefreshingSubscription] = useState(false);
-  const { checkLogin } = useLoginDialog();
   const overlayData = useOverlayData();
   const [hwCapability, setHwCapability] = useState<HardwareCapability | null>(null);
 
@@ -2450,12 +2448,7 @@ export function RecordingSettings({ section }: { section: RecordingSettingsSecti
       return;
     }
 
-    const isLoggedIn = checkLogin(settings.user);
-    // Cloud transcription works on every plan (free tier allowance is
-    // enforced server-side) — the only requirement is being logged in.
-    if (value === "screenpipe-cloud" && !isLoggedIn) {
-      return;
-    }
+    if (value === "screenpipe-cloud") return;
 
     let newSettings: Partial<Settings>;
     if (realtime) {
@@ -2823,9 +2816,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                   <SelectContent>
                     <SelectGroup>
                       <SelectLabel className="text-[10px] text-muted-foreground/70 normal-case tracking-wider">Cloud</SelectLabel>
-                      <SelectItem value="screenpipe-cloud">
-                        Screenpipe Cloud{hwCapability?.recommendedEngine === "screenpipe-cloud" && " ★"}
-                      </SelectItem>
+
                       <SelectItem value="deepgram">Deepgram</SelectItem>
                     </SelectGroup>
                     <SelectGroup>
@@ -2872,18 +2863,6 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2 pt-1">
-                    {audioEngineResolution.fallbackReason === "notLoggedIn" && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        data-testid="audio-engine-fallback-login"
-                        onClick={() => checkLogin(settings.user)}
-                      >
-                        Log in
-                      </Button>
-                    )}
                     <Button
                       type="button"
                       variant="outline"
@@ -3395,7 +3374,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                 <div className="min-w-0">
                   <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                     Live meeting notes
-                    <HelpTooltip text={ui("Streams only the active meeting into the live note. This is separate from background 24/7 recording and can use your selected transcription engine, screenpipe cloud, or a direct provider.")} />
+                    <HelpTooltip text={ui("Streams only the active meeting into the live note. This is separate from background 24/7 recording and can use your selected transcription engine or a direct provider.")} />
                   </h3>
                   <p className="text-xs text-muted-foreground">Meeting-only live captions, separate from background transcription</p>
                 </div>
@@ -3415,7 +3394,6 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="selected-engine">Current transcription engine</SelectItem>
-                      <SelectItem value="screenpipe-cloud">Screenpipe cloud live</SelectItem>
                       <SelectItem value="deepgram-live">Direct Deepgram live</SelectItem>
                     </SelectContent>
                   </Select>
@@ -3436,13 +3414,6 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                 />
               </div>
             </div>
-            {(settings.meetingLiveTranscriptionEnabled ?? true) &&
-              (settings.meetingLiveTranscriptionProvider ?? "selected-engine") === "screenpipe-cloud" &&
-              !settings.user?.token && (
-              <p className="mt-2 ml-[26px] text-xs text-muted-foreground">
-                Log in to screenpipe cloud to use the cloud live provider.
-              </p>
-            )}
             {(settings.meetingLiveTranscriptionEnabled ?? true) &&
               (settings.meetingLiveTranscriptionProvider ?? "selected-engine") === "selected-engine" &&
               settings.audioTranscriptionEngine === "disabled" && (

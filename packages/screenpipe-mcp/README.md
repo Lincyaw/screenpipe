@@ -108,6 +108,7 @@ A missing source ID stays missing.
 |---|---|---|
 | Search with source references and text caps | `search-content` | `search_content` |
 | Bundled guides | `screenpipe-skills` | `screenpipe-skills` |
+| Explicit marks, hierarchical memory, and existing summaries | Same nine read-only tools below | Same nine read-only tools below |
 | Frame inspection and saved workflows | Available | Not exposed |
 | Enterprise team tools | With team configuration | Not exposed |
 | Call diagnostics | Best effort | Best effort, per session |
@@ -350,8 +351,8 @@ error text on a missing token also prints the base currently in use.
 - Priority 3 is populated by the desktop app, which writes `gateway_url` from
   the org's policy poll. It needs an admin signed in on that machine; on a
   server or CI box use the env var or the flag.
-- The HTTP transport (`--http`) exposes `search_content` only; `team-*` tools are
-  stdio-only.
+- The HTTP transport (`--http`) exposes core search, local session reads and
+  read-only memory tools; `team-*` tools remain stdio-only.
 - The `.mcpb` bundle (Claude Desktop extension install) has no UI for these
   variables — use the manual NPX config above for gateway orgs.
 
@@ -371,6 +372,61 @@ npx @modelcontextprotocol/inspector npx screenpipe-mcp
 | **HTTP** | `npx screenpipe-mcp --http` | Remote clients, network access, OpenClaw on VPS |
 
 ## Available Tools
+
+### Explicit memory and hierarchical retrieval
+
+The following tools share one implementation across stdio and HTTP. They require
+an engine with the explicit-memory/index routes and the local owner's Bearer API
+key (`SCREENPIPE_LOCAL_API_KEY`). Pipe tokens, browser cookies and unauthenticated
+localhost access do not grant access. HTTP uses the same upstream URL environment
+variables as stdio, including `SCREENPIPE_LOCAL_API_URL` and
+`SCREENPIPE_LOCAL_API_PORT`; its separate `--api-key` protects the MCP listener.
+
+| Tool | Read behavior |
+|---|---|
+| `search-marks` | Search saved annotations by `q`, `tag`, or exact `frame_id`; returns bounded notes and source metadata. |
+| `read-mark` | Read one annotation UUID, including user comments, selected text and normalized image regions. |
+| `get-mark-image` | Read a mark's image metadata; pixels require explicit `include_image: true`. |
+| `memory-tree` | Browse day, session and task nodes; expand a returned opaque `parent_id` or filter by exact annotation `tag`. |
+| `memory-node` | Read a node's evidence, saved marks, children, coverage totals and existing summary; defaults to 3 records per section, with configurable `limit` up to 50. |
+| `search-memory` | Retrieve typed user-note, captured-text, context-node and available-summary matches using required nonblank `q` and optional exact annotation `tag`. Scores indicate relevance. |
+| `memory-index-status` | Inspect coverage, freshness and indexing backlog without triggering a rebuild. |
+| `read-memory-summary` | Read an existing node summary with model/prompt provenance, citations and input coverage. |
+| `memory-summary-status` | Inspect local model availability and summary-job counts. |
+
+Start with a small tree or search, then read returned node/mark IDs. Node IDs are
+opaque: copy them from results. Tree/search filters include `kind`, `parent_id`,
+`app`, explicit-zone RFC3339 `start_time`/`end_time`, and
+`timezone_offset_minutes` (`480` means UTC+8). Use `depth: 1` initially; maximum
+depth is 3. List reads default to 20 items and accept at most 50, with bounded
+offsets. Follow the returned `pagination.next_offset`; preserve coverage totals
+and `output_truncated` rather than treating a snippet as complete history.
+
+`memory-node` requests its smaller `limit` from the backend before formatting
+text. Increase it for more excerpts or browse child nodes with `memory-tree`.
+If a response exceeds the 1 MiB upstream JSON cap, reduce `limit` and retry.
+
+Prose defaults to 1,000 characters per field. `max_text_length` accepts 0–8,000
+where supported; 0 omits note/excerpt text. Text responses are capped at 64 KiB,
+upstream JSON at 1 MiB, and reads time out after 20 seconds. A large response may
+require a smaller page, shallower tree or scoped mark/summary read. Mark lists
+and node details show compact selection previews; `read-mark` reads up to all 32
+selection records with bounded text.
+
+Images are separate from text retrieval. Explicit image reads accept JPEG/PNG
+only, check their formats, stream at most 8 MiB before base64 encoding, and allow
+at most two concurrent image reads per helper process. They use authenticated
+mark-image routes, never local file paths, token-bearing image URLs, redirects or
+nearby-frame fallbacks. Missing or policy-blocked evidence returns an error,
+not an empty successful result.
+
+`user_note` and selected quotes remain user-authored interpretations, not verified
+facts. Context labels and `generated_summary` are derived. Keep source IDs,
+availability, provisional boundaries, freshness and coverage with any answer.
+Non-ready summaries return status without stale text or citations. These tools
+never create/edit marks, request capture, configure models, generate summaries,
+correct nodes or rebuild indexes. Existing unrelated MCP tools retain their
+own contracts.
 
 ### search-content
 Search through recorded content with content type filtering:

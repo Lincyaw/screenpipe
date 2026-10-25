@@ -167,8 +167,8 @@ export function usePiSessionLifecycle({
   const hasPresets = Boolean(aiPresets && aiPresets.length > 0);
   const hasValidModel = activePreset?.provider === "acp"
     ? Boolean(activePreset.acpAgent?.id?.trim())
-    : Boolean(activePreset?.model && activePreset.model.trim() !== "");
-  const needsLogin = activePreset?.provider === "screenpipe-cloud" && !userToken;
+    : Boolean(activePreset?.provider !== "screenpipe-cloud" && activePreset?.model && activePreset.model.trim() !== "");
+  const needsLogin = false;
   // Composition and submission do not depend on runtime readiness. A valid
   // preset is enough to accept the user's intent; the send transport waits for
   // an in-flight start/switch before dispatching it to the selected provider.

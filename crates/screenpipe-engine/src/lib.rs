@@ -34,6 +34,8 @@
 //! section in `AGENTS.md` before touching those.
 
 pub mod activity_ledger;
+pub(crate) mod hierarchical_memory;
+pub(crate) mod hierarchy_summary;
 pub(crate) mod agent_profile;
 pub(crate) mod agent_skills;
 pub mod analytics;
@@ -68,6 +70,7 @@ pub mod live_views;
 pub mod local_chat;
 pub mod logging;
 mod mcp_call;
+mod marked_capture;
 pub mod mcp_servers_api;
 pub mod meeting_export;
 pub mod meeting_summary;

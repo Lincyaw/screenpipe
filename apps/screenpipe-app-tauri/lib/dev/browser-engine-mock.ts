@@ -207,6 +207,11 @@ export function mockLocalApiResponse(
   }
 
   const method = (init?.method ?? "GET").toUpperCase();
+  if (url.pathname === "/agent-sessions") {
+    const session = { source: "codex", id: "context-fixture", title: "Capture reliability review", preview: "Keep recordings durable when processing is delayed", updated_at: Date.now(), can_send: false, state: "recorded" };
+    if (url.searchParams.has("id")) return Response.json({ session, text: "User: Review capture recovery.\nAssistant: Preserve recordings and defer background processing.", historical: true, coverage: "bounded_prefix", max_lines: 5000, max_characters: 60000, warnings: [] });
+    return Response.json({ results: scenario === "empty" ? [] : [session], warnings: [], has_more: false });
+  }
   if (url.pathname === "/starred-sessions") {
     if (method === "POST") {
       const value = JSON.parse(String(init?.body));

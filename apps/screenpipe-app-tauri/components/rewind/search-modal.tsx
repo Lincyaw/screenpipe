@@ -4,44 +4,24 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback, useMemo, useLayoutEffect } from "react";
-import { Search, X, Loader2, Clock, MessageSquare, User, ArrowLeft, Mic, Volume2, Hash, Tag, Monitor, Keyboard, ClipboardCopy, AppWindow } from "lucide-react";
-import {
-  useKeywordSearchStore,
-  SearchMatch,
-  UiEventResult,
-  queryHighlightTokens,
-  type SearchAnalyticsSurface,
-} from "@/lib/hooks/use-keyword-search-store";
+import { Search, X, Loader2, Clock, MessageSquare, User, ArrowLeft, Mic, Volume2, Hash, Monitor, Keyboard, ClipboardCopy, AppWindow } from "lucide-react";
+import { useKeywordSearchStore, SearchMatch, UiEventResult, queryHighlightTokens, type SearchAnalyticsSurface } from "@/lib/hooks/use-keyword-search-store";
 import { buildResultTimeRanges } from "@/lib/search/result-facets";
-import {
-  APP_ENTITY_SQL,
-  filterAppEntities,
-  formatAppEntityMeta,
-  parseAppEntities,
-  parseEntityFilter,
-  type AppEntity,
-} from "@/lib/search/app-entities";
+import { APP_ENTITY_SQL, filterAppEntities, formatAppEntityMeta, parseAppEntities, parseEntityFilter, type AppEntity } from "@/lib/search/app-entities";
 import { useSearchHighlight } from "@/lib/hooks/use-search-highlight";
 import { useSearchFocus } from "./hooks/use-search-focus";
 import { listen, emit } from "@tauri-apps/api/event";
-import {
-  CHAT_HISTORY_INITIAL_LIMIT,
-  getCachedRecentChats,
-  listConversations,
-  prefetchRecentChats,
-  searchConversations,
-  type ConversationMeta,
-} from "@/lib/chat-storage";
+import { type ConversationMeta } from "@/lib/chat-storage";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { format, isToday, isYesterday } from "date-fns";
 import { cn } from "@/lib/utils";
 import { commands } from "@/lib/utils/tauri";
-import { showChatWithPrefill } from "@/lib/chat-utils";
+
 import { runSearchResultNavigation } from "@/lib/search-result-navigation";
 import { ThumbnailHighlightOverlay } from "./thumbnail-highlight-overlay";
 import { getFrameThumbnailSources } from "@/lib/frame-thumbnails";
 import { NearViewport } from "./near-viewport";
-import { localFetch, getApiBaseUrl, appendAuthToken } from "@/lib/api";
+import { localFetch } from "@/lib/api";
 import { searchInputBehaviorProps } from "@/lib/search-input-behavior";
 import { usePlatform } from "@/lib/hooks/use-platform";
 import posthog from "posthog-js";
@@ -736,9 +716,9 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
 
   // Chat search state. Seed from the prewarm cache so a reopened search window
   // paints its recent chats on the first frame instead of after a disk scan.
-  const cachedChats = getCachedRecentChats();
+  const cachedChats: ConversationMeta[] = [];
   const [chatResults, setChatResults] = useState<ConversationMeta[]>(cachedChats ?? []);
-  const [isLoadingChats, setIsLoadingChats] = useState(!cachedChats);
+  const [isLoadingChats, setIsLoadingChats] = useState(false);
   // Which query `chatResults` actually belongs to. Without this the list held
   // whatever loaded when the palette opened, so a fresh query briefly painted
   // the previous (non-matching) chats before its own search returned.
@@ -794,35 +774,7 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
     isOpen,
     query.trim().length === 0,
   );
-  const loadChats = useCallback(async (q: string) => {
-    const requestId = ++chatSearchRequestRef.current;
-    setIsLoadingChats(true);
-    try {
-      const options = {
-        limit: CHAT_HISTORY_INITIAL_LIMIT,
-        includeHidden: false,
-        kind: "chat" as const,
-      };
-      const chats = q.trim()
-        ? await searchConversations(q, options)
-        : await listConversations(options);
-      if (chatSearchRequestRef.current === requestId) {
-        setChatResults(chats);
-        setChatsQuery(q.trim());
-        setNavIndex(0);
-      }
-    } catch {
-      if (chatSearchRequestRef.current === requestId) {
-        setChatResults([]);
-        setChatsQuery(q.trim());
-        setNavIndex(0);
-      }
-    } finally {
-      if (chatSearchRequestRef.current === requestId) {
-        setIsLoadingChats(false);
-      }
-    }
-  }, []);
+
 
   const {
     searchResults,
@@ -975,40 +927,6 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
   const filteredSpeakerTranscriptionsRef = useRef(filteredSpeakerTranscriptions);
   filteredSpeakerTranscriptionsRef.current = filteredSpeakerTranscriptions;
 
-  // Load chats in the chats tab immediately. In "All", wait until the keyword
-  // pass has settled so chat archive search does not compete with first paint.
-  // "Settled" has to include failure: a keyword search that errors leaves
-  // `searchQuery` on the previous query forever, and gating only on success
-  // meant the chat pass never ran and the panel never stopped loading.
-  useEffect(() => {
-    if (!isOpen || isTagSearch || isEntitySearch) {
-      setChatsPassPending(false);
-      return;
-    }
-    const q = debouncedQuery.trim();
-    const wantsChats = contentFilter === "chats" || q.length >= MIN_QUERY_CHARS;
-    if (!wantsChats) {
-      setChatsPassPending(false);
-      return;
-    }
-    const keywordPassSettled = !isSearching && (searchQuery === q || Boolean(searchError));
-    if (contentFilter === "chats" || keywordPassSettled) {
-      // Cleared in the same commit that starts the pass — `isLoadingChats`
-      // carries the loading state from here, so the panel never blinks.
-      setChatsPassPending(false);
-      // `contentFilter` is a dep, so switching scope re-entered here and
-      // refetched a query that was already loaded — and because loadChats flips
-      // isLoadingChats, the Chats scope hid the rows it already had and painted
-      // a skeleton. loadChats doesn't read contentFilter, so All and Chats get
-      // identical rows for the same query and the second fetch is pure waste.
-      if (dispatchedChatQueryRef.current === q) return;
-      dispatchedChatQueryRef.current = q;
-      void loadChats(q);
-      return;
-    }
-    setChatsPassPending(true);
-  }, [contentFilter, debouncedQuery, isOpen, isTagSearch, isEntitySearch, loadChats, searchQuery, searchError, isSearching]);
-
   // Chat results are already bounded / searched in chat-storage.
   const filteredChats = useMemo(() => {
     return chatResults;
@@ -1152,43 +1070,6 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
   }, [debouncedQuery, isTagSearch, isEntitySearch]);
 
   const { setHighlight, clear: clearHighlight } = useSearchHighlight();
-
-  // Load all chats on open — powers both the inline chat section in "All" view
-  // and the recent chats strip in the empty state
-  useEffect(() => {
-    if (!isOpen) return;
-    const requestId = ++recentChatRequestRef.current;
-    // Only show the loading state when we have nothing cached to paint; with a
-    // cache this refresh is silent and simply replaces the list when it lands.
-    if (!queryRef.current.trim() && !getCachedRecentChats()) {
-      setIsLoadingChats(true);
-    }
-    prefetchRecentChats()
-      .then((all) => {
-        if (recentChatRequestRef.current !== requestId) return;
-        setRecentChats(all.slice(0, 5));
-        if (!queryRef.current.trim()) {
-          setChatResults(all);
-          setChatsQuery("");
-          // Same list the Chats scope would fetch for an empty query, so mark
-          // it dispatched and let entering that scope reuse it.
-          dispatchedChatQueryRef.current = "";
-          setNavIndex(0);
-        }
-      })
-      .catch(() => {
-        if (recentChatRequestRef.current === requestId && !queryRef.current.trim()) {
-          setChatResults([]);
-          setChatsQuery("");
-          setNavIndex(0);
-        }
-      })
-      .finally(() => {
-        if (recentChatRequestRef.current === requestId && !queryRef.current.trim()) {
-          setIsLoadingChats(false);
-        }
-      });
-  }, [isOpen]);
 
   useEffect(() => {
     if (isOpen) {
@@ -1697,56 +1578,6 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
     [onClose, trackSearchResultSelected],
   );
 
-  // Send to AI handler — acts on the selected frame only. The footer hides the
-  // ⌘⏎ hint whenever the selection is a chat or keyboard row, so the shortcut
-  // has to be inert there too; it used to silently send the first screen result
-  // instead of the row you were looking at.
-  const handleSendToAI = useCallback(async () => {
-    const active = navItemsRef.current[navIndexRef.current];
-    if (!active || active.kind !== "frame") return;
-    const result = filteredResults[active.index];
-    if (!result) return;
-
-    posthog.capture("search_ui_ask_ai", {
-      surface: analyticsSurface,
-      search_id: getSearchAnalyticsId(
-        buildSearchAnalyticsKey(
-          searchEpoch,
-          query.trim(),
-          contentFilter,
-          appFilter,
-          domainFilter,
-          timeFilter,
-        ),
-      ),
-      search_session_id: searchSessionIdRef.current,
-      query_length: query.trim().length,
-      result_type: "screen",
-      has_app_filter: Boolean(appFilter),
-      has_domain_filter: Boolean(domainFilter),
-      has_time_filter: Boolean(timeFilter),
-    });
-
-    const context = `Context from search result:\n${result.app_name} - ${result.window_name}\nTime: ${format(new Date(result.timestamp), "PPpp")}\n\nText:\n${result.text || ""}`;
-
-    // Close search modal first
-    onClose();
-
-    // Show chat window and deliver prefill (handles fresh webview creation)
-    await showChatWithPrefill({ context, frameId: result.frame_id });
-  }, [
-    analyticsSurface,
-    appFilter,
-    contentFilter,
-    domainFilter,
-    filteredResults,
-    getSearchAnalyticsId,
-    onClose,
-    query,
-    searchEpoch,
-    timeFilter,
-  ]);
-
   // Handle going back from speaker drill-down
   const handleBackFromSpeaker = useCallback(() => {
     setSelectedSpeaker(null);
@@ -2090,10 +1921,6 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
           break;
         case "Enter": {
           e.preventDefault();
-          if (e.metaKey || e.ctrlKey) {
-            handleSendToAI();
-            break;
-          }
           const item = items[navIndexRef.current];
           if (!item) break;
           if (item.kind === "chat") {
@@ -2135,7 +1962,7 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
       window.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("keydown", captureEscape, true);
     };
-  }, [isOpen, selectedSpeaker, selectedApp, handleBackFromApp, onClose, navigateToResult, handleSelectResult, handleSendToAI, handleBackFromSpeaker, handleOpenChatResult, trackSearchResultSelected, embedded, frameColumns]);
+  }, [isOpen, selectedSpeaker, selectedApp, handleBackFromApp, onClose, navigateToResult, handleSelectResult, handleBackFromSpeaker, handleOpenChatResult, trackSearchResultSelected, embedded, frameColumns]);
 
   // Scroll selected row into view (only on arrow-key navigation, not on new page load)
   const prevNavIndex = useRef(navIndex);
@@ -2387,7 +2214,6 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
           { key: "all" as ContentFilter, label: ui("All"), icon: null },
           { key: "screen" as ContentFilter, label: ui("Screen"), icon: Monitor },
           { key: "input" as ContentFilter, label: ui("Keys"), icon: Keyboard },
-          { key: "chats" as ContentFilter, label: ui("Chats"), icon: MessageSquare },
         ] as const).map(({ key, label, icon: Icon }) => {
           const isActive = contentFilter === key;
           return (
@@ -3500,7 +3326,7 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
                 setHasMoreTranscriptions(true);
               }
             }}
-            placeholder={ui("Search memory & chats... (# tags, @ apps & people)")}
+            placeholder={ui("Search recordings... (# tags, @ apps & people)")}
             className={cn(
               "min-w-[120px] flex-1 bg-transparent text-foreground placeholder:text-muted-foreground/60 outline-none",
               standalone ? "text-base" : "text-sm",
@@ -3600,7 +3426,7 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
                 setHasMoreTranscriptions(true);
               }
             }}
-            placeholder={ui("Search memory & chats... (# tags, @ apps & people)")}
+            placeholder={ui("Search recordings... (# tags, @ apps & people)")}
             className="min-w-[120px] flex-1 bg-transparent text-foreground placeholder:text-muted-foreground text-sm outline-none"
             {...searchInputBehaviorProps}
           />

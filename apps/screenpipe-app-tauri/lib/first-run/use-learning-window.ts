@@ -6,7 +6,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import posthog from "posthog-js";
 
 import { commands, type AIPreset } from "@/lib/utils/tauri";
 import {
@@ -29,11 +28,7 @@ import {
   type FirstRunLearningState,
 } from "@/lib/first-run/learning-window";
 import { fetchRecentActivity } from "@/lib/first-run/recent-activity";
-import {
-  TRIAL_ACTIVATION_PAYWALL_STEP,
-  trialActivationState,
-  type TrialActivationState,
-} from "@/lib/first-run/trial-activation";
+import type { TrialActivationState } from "@/lib/first-run/trial-activation";
 
 export type LearningWindowView = FirstRunLearningState & {
   remainingMs: number;
@@ -62,8 +57,6 @@ export function useLearningWindow(
   const [remainingMs, setRemainingMs] = useState(() =>
     learningWindowRemainingMs(readLearningWindow().startedAt),
   );
-  const [activationState, setActivationState] =
-    useState<TrialActivationState>("inactive");
 
   useEffect(() => {
     let cancelled = false;
@@ -89,7 +82,6 @@ export function useLearningWindow(
         }
         return;
       }
-      setActivationState(trialActivationState(native.currentStep));
       const startedAt = native.firstRunSummaryStartedAt ?? native.completedAt;
 
       if (phase === "learning" && startedAt) {
@@ -195,22 +187,7 @@ export function useLearningWindow(
   const markSummaryOpened = useCallback(() => setState(markLearningSummaryOpened()), []);
   const markSummaryRendered = useCallback(async () => {
     if (readLearningWindow().phase !== "ready") return;
-    // A restored chat can render before the first status poll resolves. Read
-    // the persisted gate before retiring it so treatment keeps its summary.
-    const native = await commands.getOnboardingStatus();
-    if (native.status !== "ok") throw new Error(native.error);
-    const renderedActivation = trialActivationState(native.data.currentStep);
-    if (renderedActivation !== "summary") {
-      if (renderedActivation !== "paywall") setState(markLearningDone());
-      return;
-    }
-    await commands.setOnboardingStep(TRIAL_ACTIVATION_PAYWALL_STEP);
-    posthog.capture("first_run_summary_rendered", {
-      experiment: "first-summary-card-trial-v1",
-      variant: "summary_first",
-      eligible_new_install: true,
-    });
-    setActivationState("paywall");
+    setState(markLearningDone());
   }, []);
   // Notification persistence is native; retained for the existing view contract.
   const markNotificationSent = useCallback(() => {}, []);
@@ -218,18 +195,14 @@ export function useLearningWindow(
     markLearningReadyShown();
   }, []);
   const dismiss = useCallback(() => {
-    posthog.capture("first_run_learning_dismissed", {
-      phase: state.phase,
-      opened: Boolean(state.summaryOpenedAt),
-    });
     setState(markLearningDone());
-  }, [state.phase, state.summaryOpenedAt]);
+  }, []);
 
   return {
     ...state,
     capturedApps,
     remainingMs,
-    activationState,
+    activationState: "inactive",
     markSummaryOpened,
     markSummaryRendered,
     markNotificationSent,

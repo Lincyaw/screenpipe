@@ -137,6 +137,16 @@ before considering them complete. This command queues its initial native
 compile across all local Screenpipe worktrees, then releases the queue slot for
 the live app; see [`docs/macos-dev-builds.md`](../../docs/macos-dev-builds.md).
 
+## Context interface
+
+The desktop opens collected activity and provides meeting, timeline, local agent-session and saved-record views. Recording, source connections, privacy and storage stay in the desktop. External agents handle conversation and task execution through MCP.
+
+Local Codex, Claude, Cursor and Gemini transcripts are reference records. They are read on demand without importing them into the chat store or launching an agent. MCP exposes `search-agent-sessions` and `read-agent-session`; the local HTTP endpoint is `GET /agent-sessions` with `q`, `source`, `id` and `limit` parameters. Use the exact source and ID returned by search for a read. Responses retain scan warnings and identify transcript reads as bounded excerpts.
+
+Session files cannot currently satisfy scoped history restrictions or required text-redaction receipts. The endpoint rejects those reads rather than returning raw text. Existing capture, meeting and record retrieval continue through their normal privacy adapters.
+
+The desktop retains the on-demand meeting-summary template and no longer starts the task scheduler or automatic workflow discovery. Saved tasks and historical outputs are retained on disk. The browser-mock route `/dev/context?section=activity` previews the real read-only session interface without native storage-migration prompts.
+
 ## localization integration
 
 `gt.config.json` owns the source language and bundled languages. The initial

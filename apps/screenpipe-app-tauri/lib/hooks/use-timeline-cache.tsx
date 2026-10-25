@@ -14,7 +14,7 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { commands } from "@/lib/utils/tauri";
-import { isFreeOrUnattributedUser, type AppUser } from "@/lib/app-entitlement";
+import { isLocalHistoryRestricted, type AppUser } from "@/lib/app-entitlement";
 
 const CACHE_FILENAME = "timeline_cache.json";
 const MAX_CACHED_FRAMES = 200; // Keep last 200 frames for instant load
@@ -40,10 +40,10 @@ export function filterTimelineFramesForHistoryAccess(
 }
 
 export function shouldRestrictTimelineHistory(
-  user: AppUser | null | undefined,
-  isEnterpriseBuild: boolean,
+  _user: AppUser | null | undefined,
+  _isEnterpriseBuild: boolean,
 ): boolean {
-  return !isEnterpriseBuild && isFreeOrUnattributedUser(user);
+  return isLocalHistoryRestricted();
 }
 
 export function useAuthoritativeTimelineHistoryAccess(

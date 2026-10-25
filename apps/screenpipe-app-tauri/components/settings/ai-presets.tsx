@@ -257,7 +257,7 @@ const AISection = ({
   // Whether to surface the proactive "Business" lock UI. Off unless the PostHog
   // flag, hydrated local entitlement, and gateway eligibility all agree. The
   // gateway's `locked` flag only takes visual effect when this is true.
-  const showUpsell = useModelUpsellGating(usage?.upgrade_eligible);
+  const showUpsell = false;
   const [settingsPreset, setSettingsPreset] = useState<
     Partial<AIPreset> | undefined
   >(preset);
@@ -286,8 +286,7 @@ const AISection = ({
   const acpAdapters = useSelectableAcpAdapters(settingsPreset?.acpAgent?.id);
   const primaryAcpAdapters = primaryAcpAdapterChoices(acpAdapters);
   const customAcpAdapter = acpAdapters.find((adapter) => adapter.id === "custom");
-  const showScreenpipeCloud =
-    !isManagedDeployment || aiPresetPolicy.allow_screenpipe_cloud;
+  const showScreenpipeCloud = false;
 
   // A preset created while the flag was on must not keep the editor pinned to
   // a provider the user can no longer see once it is turned off.
@@ -1733,7 +1732,7 @@ const AISection = ({
               </p>
               <p>
                 GPU strongly recommended. Without a dedicated GPU, local models will be very slow and scheduled tasks may time out.
-                For best results consider screenpipe cloud or groq as custom provider.
+                Configure your own model endpoint and API key.
               </p>
             </div>
           )}

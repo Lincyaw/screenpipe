@@ -15,8 +15,8 @@
 
 import { AppSidebarLayout, SidebarProvider } from "@/components/app-sidebar";
 import { MeetingCalendarReminder } from "@/components/meeting-calendar-reminder";
-import { CardAskProvider } from "@/components/card-ask-provider";
-import { FirstRunLearningWindowProvider } from "@/components/first-run/learning-window-provider";
+
+
 
 export default function MainLayout({
   children,
@@ -24,7 +24,6 @@ export default function MainLayout({
   children: React.ReactNode;
 }) {
   return (
-    <FirstRunLearningWindowProvider>
       <SidebarProvider>
         <AppSidebarLayout>{children}</AppSidebarLayout>
         {/*
@@ -33,9 +32,7 @@ export default function MainLayout({
           only, which is where every card-ask trigger originates and where the
           single localStorage partition owning the arm assignment lives.
         */}
-        <CardAskProvider />
         <MeetingCalendarReminder />
       </SidebarProvider>
-    </FirstRunLearningWindowProvider>
   );
 }

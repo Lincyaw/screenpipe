@@ -9,91 +9,36 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-  TooltipProvider,
-} from "@/components/ui/tooltip";
-import {
-  Trash2,
-  Check,
-  X,
-  Loader2,
-  Copy,
-  Search,
-  Tag,
-  ChevronDown,
-  Plus,
-  Pencil,
-  AlertCircle,
-  FolderOpen,
-  Eye,
-  LayoutDashboard,
-  MessageSquare,
-  MoreVertical,
-} from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
+import { Trash2, Check, X, Loader2, Copy, Search, Tag, ChevronDown, Plus, Pencil, AlertCircle, FolderOpen, Eye, MoreVertical } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { CompactMarkdown } from "@/components/settings/compact-markdown";
 import { SafArtifactBody } from "@/components/settings/saf-sop-view";
 import { ArtifactHtmlBody } from "@/components/settings/artifact-html-body";
 import { ConfirmDeleteDialog } from "@/components/settings/confirm-delete-dialog";
-import { BrainOverview } from "@/components/settings/brain-overview";
+
 import { isHtmlFileName, SANDBOX_CSP, withoutLinkElements } from "@/lib/utils/html-sandbox";
 import { usePlatform } from "@/lib/hooks/use-platform";
 import { localFetch } from "@/lib/api";
-import {
-  useUnifiedArtifacts,
-  type UnifiedArtifact,
-} from "@/lib/hooks/use-unified-artifacts";
+import { useUnifiedArtifacts, type UnifiedArtifact } from "@/lib/hooks/use-unified-artifacts";
 import { commands } from "@/lib/utils/tauri";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
-import { showChatWithPrefill } from "@/lib/chat-utils";
-import {
-  artifactMatchesOpenRequest,
-  artifactOpenRequestKey,
-  type BrainArtifactOpenRequest,
-  OPEN_BRAIN_ARTIFACT_EVENT,
-} from "@/lib/artifact-deeplink";
+import { listen } from "@tauri-apps/api/event";
+
+import { artifactMatchesOpenRequest, artifactOpenRequestKey, type BrainArtifactOpenRequest, OPEN_BRAIN_ARTIFACT_EVENT } from "@/lib/artifact-deeplink";
 import { parseBrainSearchQuery } from "@/lib/utils/brain-search";
 import { getArtifactCardDisplay } from "@/lib/utils/artifact-display";
 import { searchInputBehaviorProps } from "@/lib/search-input-behavior";
-import {
-  resolveArtifactOpenTarget,
-  type ArtifactOpenTarget,
-} from "@/lib/utils/artifact-origin";
-import {
-  getMemoryCardDisplay,
-  type MemoryCardDisplay,
-} from "@/lib/utils/memory-display";
+import { resolveArtifactOpenTarget, type ArtifactOpenTarget } from "@/lib/utils/artifact-origin";
+import { getMemoryCardDisplay, type MemoryCardDisplay } from "@/lib/utils/memory-display";
 import { useChatStore } from "@/lib/stores/chat-store";
 import posthog from "posthog-js";
 import { qualifiedValue } from "@/lib/analytics/qualified-value";
-import {
-  consumeOnboardingBrainHandoff,
-  ONBOARDING_BRAIN_HANDOFF_EVENT,
-} from "@/lib/live-views/onboarding-activation";
+import { consumeOnboardingBrainHandoff, ONBOARDING_BRAIN_HANDOFF_EVENT } from "@/lib/live-views/onboarding-activation";
 import { useGT } from "gt-react";
 import { useUiLocale } from "@/lib/i18n/provider";
 
@@ -189,10 +134,9 @@ type UnifiedItem =
   | { kind: "memory"; data: MemoryRecord; sortDate: number }
   | { kind: "artifact"; data: UnifiedArtifact; sortDate: number };
 
-type TypeFilter = "overview" | "memories" | "artifacts";
+type TypeFilter = "memories" | "artifacts";
 
 const BRAIN_TAB_DESCRIPTIONS: Record<TypeFilter, string> = {
-  overview: "live dashboards the AI builds from your activity, updated as you work",
   memories: "what the AI has learned about you from your activity",
   artifacts: "documents, pages and files the AI has generated for you",
 };
@@ -243,16 +187,14 @@ type BrainViewState = {
 };
 
 const brainViewState: BrainViewState = {
-  typeFilter: "overview",
+  typeFilter: "memories",
   searchQuery: "",
   activeTags: [],
   visibleCountByType: {
-    overview: 0,
     memories: RENDER_WINDOW,
     artifacts: RENDER_WINDOW,
   },
   scrollTopByType: {
-    overview: 0,
     memories: 0,
     artifacts: 0,
   },
@@ -264,10 +206,8 @@ export function resetBrainViewStateForTests() {
   brainViewState.activeTags = [];
   brainViewState.visibleCountByType.memories = RENDER_WINDOW;
   brainViewState.visibleCountByType.artifacts = RENDER_WINDOW;
-  brainViewState.visibleCountByType.overview = 0;
   brainViewState.scrollTopByType.memories = 0;
   brainViewState.scrollTopByType.artifacts = 0;
-  brainViewState.scrollTopByType.overview = 0;
 }
 
 function timeAgo(iso: string): string {
@@ -409,7 +349,6 @@ export function BrainSection() {
   const initialTypeFilterRef = useRef<TypeFilter>(brainViewState.typeFilter);
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [total, setTotal] = useState(0);
-  const [liveViewsTabCount, setLiveViewsTabCount] = useState<number | null>(null);
   const [memoriesTabCount, setMemoriesTabCount] = useState<number | null>(null);
   const [artifactsTabCount, setArtifactsTabCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -437,7 +376,7 @@ export function BrainSection() {
 
   const [typeFilter, setTypeFilter] = useState<TypeFilter>(() => {
     const initial = consumeOnboardingBrainHandoff()
-      ? "overview"
+      ? "memories"
       : brainViewState.typeFilter;
     initialTypeFilterRef.current = initial;
     brainViewState.typeFilter = initial;
@@ -465,15 +404,11 @@ export function BrainSection() {
   }, []);
 
   const refreshTabCounts = useCallback(async () => {
-    const [viewsResult, memoriesResult, artifactsResult] = await Promise.allSettled([
-      commands.listBrainViews(),
+    const [memoriesResult, artifactsResult] = await Promise.allSettled([
       localFetch("/memories?limit=1&offset=0"),
       localFetch("/artifacts?limit=1&offset=0"),
     ]);
 
-    if (viewsResult.status === "fulfilled" && viewsResult.value.status === "ok") {
-      setLiveViewsTabCount(viewsResult.value.data.length);
-    }
     if (memoriesResult.status === "fulfilled" && memoriesResult.value.ok) {
       const data: MemoryListResponse = await memoriesResult.value.json();
       setMemoriesTabCount(data.pagination.total);
@@ -519,35 +454,6 @@ export function BrainSection() {
     [chatSessions],
   );
 
-  const openArtifactOrigin = useCallback(
-    (
-      artifact: UnifiedArtifact,
-      target: ArtifactOpenTarget,
-      filePreviewPath: string,
-      surface: ArtifactOpenSurface,
-    ) => {
-      posthog.capture("brain_artifact_opened", {
-        artifact_kind: analyticsArtifactKind(artifact.kind),
-        open_mode: target.mode,
-        registered: artifact.registered,
-        surface,
-      });
-      qualifiedValue.artifactOpened(
-        artifact.source_type === "pipe" || artifact.source_type === "pipe-run",
-      );
-      if (target.mode === "artifact-only") {
-        void commands.openViewerWindow(filePreviewPath);
-        return;
-      }
-      void emit("chat-load-conversation", {
-        conversationId: target.conversationId,
-        targetWindow: "home",
-        filePreviewPath,
-      });
-    },
-    [],
-  );
-
   const openArtifactViewer = useCallback(
     (artifact: UnifiedArtifact, surface: ArtifactOpenSurface) => {
       posthog.capture("brain_artifact_opened", {
@@ -563,21 +469,6 @@ export function BrainSection() {
     },
     [],
   );
-
-  const askAboutArtifact = useCallback(async (artifact: UnifiedArtifact) => {
-    posthog.capture("brain_artifact_ask_ai", {
-      artifact_kind: analyticsArtifactKind(artifact.kind),
-      registered: artifact.registered,
-    });
-    await showChatWithPrefill({
-      context: "",
-      prompt: `help me understand the Screenpipe artifact at ${artifact.path}`,
-      autoSend: false,
-      source: "brain-artifact",
-      useHomeChat: true,
-      filePreviewPath: artifact.path,
-    });
-  }, []);
 
   // Opening an artifact selects it into the side-by-side detail pane instead
   // of navigating away. Jumping to the origin chat/run or a viewer window
@@ -684,7 +575,7 @@ export function BrainSection() {
   useEffect(() => {
     const openOverview = () => {
       consumeOnboardingBrainHandoff();
-      switchTypeFilter("overview");
+      switchTypeFilter("memories");
     };
     window.addEventListener(ONBOARDING_BRAIN_HANDOFF_EVENT, openOverview);
     return () =>
@@ -1559,12 +1450,6 @@ export function BrainSection() {
   const isStale = staleDays >= 1;
   const brainViewOptions = [
     {
-      value: "overview" as const,
-      label: ui("Live Views"),
-      count: liveViewsTabCount,
-      Icon: LayoutDashboard,
-    },
-    {
       value: "memories" as const,
       label: ui("Memories"),
       count: memoriesTabCount,
@@ -1624,43 +1509,14 @@ export function BrainSection() {
     <div data-testid="section-brain" className="h-full overflow-hidden">
     <div
       data-testid="brain-content"
-      className={`mx-auto flex h-full flex-col px-3 pb-6 pt-10 sm:px-6 ${
-        typeFilter === "overview"
-          ? "max-w-none space-y-2"
-          : "max-w-6xl space-y-4"
-      }`}
+      className="mx-auto flex h-full max-w-6xl flex-col space-y-4 px-3 pb-6 pt-10 sm:px-6"
     >
       <p className="mb-4 text-sm text-muted-foreground">
         {BRAIN_TAB_DESCRIPTIONS[typeFilter]}
       </p>
 
-      {/* stale memories warning */}
-      {typeFilter === "memories" && isStale && (
-        <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-600 dark:text-yellow-400">
-          <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-          <span>
-            Memories haven&apos;t updated in {ui("{count, plural, one {# day} other {# days}}", { count: staleDays })}.
-            check that a memory-writing scheduled task is installed and enabled
-            &mdash;{" "}
-            <a
-              href="?section=pipes&tab=discover&q=memory"
-              className="underline hover:opacity-80 transition-opacity"
-            >
-              Browse scheduled tasks
-            </a>
-            .
-          </span>
-        </div>
-      )}
-
-      <div
-        className={
-          typeFilter === "overview"
-            ? "hidden"
-            : "flex items-center justify-between gap-3"
-        }
-      >
-        {typeFilter !== "overview" && brainViewSwitcher}
+      <div className="flex items-center justify-between gap-3">
+        {brainViewSwitcher}
         {showFilterButton && (
           <Popover
             open={filterOpen}
@@ -1756,14 +1612,7 @@ export function BrainSection() {
         )}
       </div>
 
-      {typeFilter === "overview" ? (
-        <BrainOverview
-          navigation={brainViewSwitcher}
-          onViewCountChange={setLiveViewsTabCount}
-        />
-      ) : (
-        <>
-
+      {(<>
       {/* search bar + add button */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
@@ -2126,22 +1975,7 @@ export function BrainSection() {
         <div className="text-sm text-muted-foreground py-8 space-y-2 text-center">
           <p>{emptyStateMessage(typeFilter, debouncedQuery, activeTags.length > 0)}</p>
           {!debouncedQuery && activeTags.length === 0 && typeFilter === "memories" && (
-            <>
-              <p className="text-xs">
-                Memories are automatically created by scheduled tasks that learn from your
-                screen & audio activity.
-              </p>
-              <p className="text-xs mt-3">
-                Install scheduled tasks from the{" "}
-                <a
-                  href="?section=pipes&tab=discover"
-                  className="underline text-foreground hover:text-foreground/80 transition-colors"
-                >
-                  Store
-                </a>{" "}
-                to start building memories.
-              </p>
-            </>
+            <p className="text-xs">Saved context records appear here. An external agent can retrieve and organize them through MCP.</p>
           )}
         </div>
       ) : (
@@ -2212,16 +2046,6 @@ export function BrainSection() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-                    {target.mode !== "artifact-only" && (
-                      <DropdownMenuItem
-                        onClick={() =>
-                          openArtifactOrigin(artItem, target, artPath, "card_action")
-                        }
-                      >
-                        <MessageSquare className="mr-2 h-3.5 w-3.5" />
-                        {target.mode === "pipe-run" ? ui("Go to task run") : ui("Go to chat")}
-                      </DropdownMenuItem>
-                    )}
                     <DropdownMenuItem
                       data-testid={`brain-open-viewer-${artTestId}`}
                       onClick={() => openArtifactViewer(artItem, "card_action")}
@@ -2839,15 +2663,6 @@ export function BrainSection() {
                           the one visible transformation action. Esc closes the
                           pane. */}
                       <div className="flex shrink-0 items-center gap-1">
-                        <Button
-                          size="sm"
-                          className="h-7 gap-1.5 px-2 text-[10px] normal-case tracking-wide"
-                          data-testid="brain-detail-ask-ai"
-                          onClick={() => void askAboutArtifact(artifact)}
-                        >
-                          <MessageSquare className="h-3.5 w-3.5" />
-                          Ask AI
-                        </Button>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
@@ -2861,23 +2676,6 @@ export function BrainSection() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            {target.mode !== "artifact-only" && (
-                              <DropdownMenuItem
-                                onClick={() =>
-                                  openArtifactOrigin(
-                                    artifact,
-                                    target,
-                                    artifact.path,
-                                    "detail",
-                                  )
-                                }
-                              >
-                                <MessageSquare className="mr-2 h-3.5 w-3.5" />
-                                {target.mode === "pipe-run"
-                                  ? ui("Go to task run")
-                                  : ui("Go to chat")}
-                              </DropdownMenuItem>
-                            )}
                             <DropdownMenuItem
                               onClick={() => openArtifactViewer(artifact, "detail")}
                             >

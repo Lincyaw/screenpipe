@@ -47,6 +47,7 @@ static RESOLVED_CLOUD_TOKEN: RwLock<Option<String>> = RwLock::new(None);
 
 /// Seed/replace the process cache. Empty/`None` clears it (sign-out).
 pub fn seed_cloud_token(token: Option<String>) {
+    let token = if crate::app_mode::is_local_only() { None } else { token };
     if let Ok(mut guard) = RESOLVED_CLOUD_TOKEN.write() {
         *guard = normalize_cloud_token(token);
     }
@@ -54,6 +55,7 @@ pub fn seed_cloud_token(token: Option<String>) {
 
 /// Read the process-cached cloud token, if seeded.
 pub fn cached_cloud_token() -> Option<String> {
+    if crate::app_mode::is_local_only() { return None; }
     RESOLVED_CLOUD_TOKEN.read().ok()?.clone()
 }
 
@@ -120,6 +122,12 @@ async fn load_session_token_at(data_dir: &Path, key: Option<[u8; 32]>) -> Option
 /// in-process cache. Empty/`None` clears it. Returns an error if persistence
 /// fails so callers can avoid removing the last plaintext copy.
 pub async fn store_cloud_token(token: Option<&str>) -> anyhow::Result<()> {
+    if crate::app_mode::is_local_only() {
+        seed_cloud_token(None);
+        return if token.is_some_and(|value| !value.is_empty()) {
+            Err(anyhow::anyhow!("Screenpipe accounts are not available in this local build"))
+        } else { Ok(()) };
+    }
     let normalized = normalize_cloud_token(token.map(str::to_string));
     let token = normalized.as_deref();
     let previous = cached_cloud_token().as_deref().and_then(crate::acquisition_handoff::subject);
@@ -185,6 +193,7 @@ async fn clear_cloud_sessions(dirs: &[std::path::PathBuf]) -> anyhow::Result<()>
 /// into the SecretStore, seed the cache, then scrub the plaintext copies.
 /// Idempotent and best-effort — safe to call on every startup.
 pub async fn migrate_plaintext_token(data_dir: &Path) -> Option<String> {
+    if crate::app_mode::is_local_only() { return None; }
     let read_key = screenpipe_secrets::keychain::get_key_for_read();
     match write_encryption_key() {
         Ok(write_key) => migrate_at(data_dir, read_key, write_key).await,

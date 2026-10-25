@@ -7,7 +7,7 @@
 // module remains the explicit connect/remove surface in Settings.
 
 import { screenpipeWebUrl, PROD_WEB_BASE } from "@/lib/web-url";
-import { homeDir, configDir, join, dirname } from "@tauri-apps/api/path";
+import { homeDir, configDir, join, dirname, isAbsolute } from "@tauri-apps/api/path";
 import {
   readTextFile,
   writeFile,
@@ -176,12 +176,27 @@ export async function buildMcpConfig(opts?: {
   };
 
   if (opts?.forceNpx) return { command: "npx", args: ["-y", "screenpipe-mcp@latest"], env };
+  // Native debug startup resolves this checkout's built MCP before any data
+  // profile opt-out. Reuse that exact selection for explicit Settings connects.
+  // A bad override fails visibly; it must not fetch an unrelated registry build.
+  const [entrypoint, bunOverride] = await Promise.all([
+    commands.getEnv("SCREENPIPE_MCP_ENTRYPOINT"),
+    commands.getEnv("SCREENPIPE_MCP_BUN"),
+  ]);
+  for (const [name, path] of [["SCREENPIPE_MCP_ENTRYPOINT", entrypoint], ["SCREENPIPE_MCP_BUN", bunOverride]]) {
+    if (path && (!(await isAbsolute(path)) || !(await exists(path)))) {
+      throw new Error(`${name} must point to an existing absolute local file.`);
+    }
+  }
+  const args = entrypoint ? [entrypoint] : ["x", "screenpipe-mcp@latest"];
+  if (bunOverride) return { command: bunOverride, args, env };
   try {
     const res = await commands.bunCheck();
     if (res.status === "ok" && res.data.available && res.data.path) {
-      return { command: res.data.path, args: ["x", "screenpipe-mcp@latest"], env };
+      return { command: res.data.path, args, env };
     }
   } catch { /* fall through to npx */ }
+  if (entrypoint) throw new Error("The local MCP build requires an available Bun runtime. Check SCREENPIPE_MCP_BUN.");
   // Unintended fallback: the desktop app should always ship a bundled `bun`, so
   // reaching here means bun couldn't be resolved. The npx config needs Node,
   // which many users don't have — don't fail silently. Callers writing an app

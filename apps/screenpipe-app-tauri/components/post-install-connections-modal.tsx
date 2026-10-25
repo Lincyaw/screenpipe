@@ -21,7 +21,6 @@ import {
   IntegrationIcon,
   IntegrationInfo,
 } from "@/components/settings/connections-section";
-import { ComposioCard } from "@/components/settings/composio-card";
 import { localFetch } from "@/lib/api";
 import {
   COMPOSIO_CONNECTIONS,
@@ -87,13 +86,7 @@ function PostInstallComposioConnection({
     [connId, onChanged, toolkit]
   );
 
-  return (
-    <ComposioCard
-      toolkit={toolkit}
-      initialConnected={configured}
-      onChanged={handleChanged}
-    />
-  );
+  return <p className="text-xs text-muted-foreground">Use a connection with your own credentials or a local MCP server for this task.</p>;
 }
 
 export function PostInstallConnectionsModal({
@@ -106,7 +99,7 @@ export function PostInstallConnectionsModal({
 
   const ui = useGT();
   const { settings } = useSettings();
-  const composioToken = settings.user?.token;
+  const composioToken: string | undefined = undefined;
   const [statuses, setStatuses] = useState<Record<string, ConnectionStatus>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);

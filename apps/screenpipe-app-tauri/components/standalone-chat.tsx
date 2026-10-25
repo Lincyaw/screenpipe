@@ -720,16 +720,10 @@ export function StandaloneChat({
     }
 
     toast({
-      title: ui("Sign in required"),
-      description: buildInvalidatedAuthTokenMessage(),
+      title: ui("Model authentication failed"),
+      description: ui("Check your provider credentials in Models & keys."),
       variant: "destructive",
     });
-
-    try {
-      await commands.openLoginWindow(null, null);
-    } catch (e) {
-      console.warn("failed to open login after Pi auth error:", e);
-    }
   }, [updateSettings, uiLanguage]);
 
   const lastUserMessageRef = useRef<string>("");
@@ -1153,7 +1147,7 @@ export function StandaloneChat({
     aiPresets: chatAiPresets,
     isSettingsLoaded,
     shouldFreezePresetSelection: Boolean(activePipeExecution),
-    userToken: settings.user?.token,
+    userToken: null,
     appItems,
     allConnectionItems,
     connections,
@@ -1182,7 +1176,7 @@ export function StandaloneChat({
     piSessionIdRef,
     piProjectDirForSession,
     buildProviderConfig,
-    userToken: settings.user?.token,
+    userToken: null,
     setPiInfo,
     setPiStarting,
     setRunningConfigFromProviderConfig,
@@ -2445,7 +2439,7 @@ export function StandaloneChat({
         hasValidModel={hasValidModel}
         needsLogin={needsLogin}
         onOpenLogin={async () => {
-          await commands.openLoginWindow(null, null);
+          await commands.showWindow({ Home: { page: "ai" } });
         }}
         onOpenSettings={async () => {
           await commands.showWindow({ Home: { page: null } });

@@ -83,9 +83,9 @@ export function ShortcutGuide({
 
   const inAppSections = useMemo(
     () =>
-      (["chat", "navigation", "app"] as const).map((section) => ({
+      (["navigation", "app"] as const).map((section) => ({
         section,
-        items: localizeDefinitions(IN_APP_SHORTCUTS, uiMessages).filter((item) => item.section === section),
+        items: localizeDefinitions(IN_APP_SHORTCUTS, uiMessages).filter((item) => item.section === section && !["next_recent_chat", "previous_recent_chat"].includes(item.id)),
       })),
     [uiLanguage],
   );
@@ -153,7 +153,7 @@ export function ShortcutGuide({
               </span>
             </div>
             <div className="divide-y divide-border/60">
-              {localizeDefinitions(GLOBAL_SHORTCUTS, uiMessages).map((item) => {
+              {localizeDefinitions(GLOBAL_SHORTCUTS, uiMessages).filter(item => item.id !== "showChatShortcut").map((item) => {
                 const hint = globalShortcutHint(settings, item.id, isMac);
                 return (
                   <div

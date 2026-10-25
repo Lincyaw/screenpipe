@@ -6,7 +6,7 @@ import { Shield, Sparkles } from "lucide-react";
 import { AIPresetsSelector } from "@/components/rewind/ai-presets-selector";
 import { workflowModelPreference } from "@/lib/workflows/model-choice";
 import { supportsWorkflowPreset } from "@/lib/workflows/model-provider";
-import { useManagedPolicy } from "@/lib/hooks/use-managed-policy";
+import { useSettings } from "@/lib/hooks/use-settings";
 import {
   ConfidentialVerificationDetails,
   useConfidentialVerification,
@@ -24,10 +24,8 @@ export function WorkflowModelSelector({
   const [mode, setMode] = useState<WorkflowModelMode | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const { isManagedDeployment, policy } = useManagedPolicy();
-  const cloudAllowed =
-    !isManagedDeployment ||
-    policy.aiPresetPolicy?.allow_screenpipe_cloud !== false;
+  const { settings } = useSettings();
+  const cloudAllowed = false;
   const verification = useConfidentialVerification(preference.verification);
   useEffect(() => {
     let active = true;
@@ -36,7 +34,12 @@ export function WorkflowModelSelector({
         .load()
         .then((value) => {
           if (active) {
-            setMode(value);
+            const fallback = settings.aiPresets.find(preset => preset.provider !== "screenpipe-cloud" && supportsWorkflowPreset(preset));
+            if (!value.startsWith("preset:") && fallback) {
+              const localMode = `preset:${fallback.id}` as WorkflowModelMode;
+              setMode(localMode);
+              void preference.save(localMode).catch(() => setError("Could not save your model choice."));
+            } else setMode(value);
             setError("");
           }
         })
@@ -55,7 +58,7 @@ export function WorkflowModelSelector({
       window.removeEventListener("focus", refresh);
       window.removeEventListener("workflows:model-changed", refresh);
     };
-  }, [preference]);
+  }, [preference, settings.aiPresets]);
   async function choose(value: WorkflowModelMode) {
     setBusy(true);
     setError("");
@@ -83,12 +86,12 @@ export function WorkflowModelSelector({
         selectionLabel={
           busy ? (
             "Saving…"
-          ) : mode === "intelligent" ? (
+          ) : false ? (
             <span className="flex min-w-0 items-center gap-2">
               <Sparkles className="h-4 w-4 shrink-0 opacity-80" />
               <span>Intelligent</span>
             </span>
-          ) : mode === "private" ? (
+          ) : false ? (
             <span className="flex min-w-0 items-center gap-2">
               <Shield className="h-4 w-4 shrink-0 opacity-80" />
               <span>Private</span>

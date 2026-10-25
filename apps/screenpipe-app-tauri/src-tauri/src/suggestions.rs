@@ -151,7 +151,7 @@ pub async fn set_enhanced_ai_suggestions(
     token: String,
 ) -> Result<(), String> {
     let mut guard = state.enhanced_ai.lock().await;
-    if enabled && !token.is_empty() {
+    if !crate::app_mode::is_local_only() && enabled && !token.is_empty() {
         *guard = Some(EnhancedAIConfig { enabled, token });
     } else {
         *guard = None;

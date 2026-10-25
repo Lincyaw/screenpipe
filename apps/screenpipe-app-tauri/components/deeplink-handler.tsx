@@ -79,8 +79,6 @@ export function DeeplinkHandler() {
   const { toast } = useToast();
   const { setShowChangelogDialog } = useChangelogDialog();
   const { open: openStatusDialog } = useStatusDialog();
-  const { settings, loadUser, reloadStore } = useSettings();
-  const userToken = settings.user?.token;
   const setPendingNavigation = useTimelineStore((s) => s.setPendingNavigation);
 
   useEffect(() => {
@@ -102,8 +100,8 @@ export function DeeplinkHandler() {
     // and the custom Tauri event from single-instance handoff.
     const processDeepLinkUrl = async (url: string) => {
       const parsedUrl = new URL(url);
-      if (workflowReviewLink(url)) {
-        await routeNotificationDeeplink(url);
+      if (workflowReviewLink(url) || ["workflows", "chat", "pipe", "first-run-summary"].includes(parsedUrl.host) || parsedUrl.pathname.startsWith("/chat/")) {
+        await commands.showWindowActivated({ Home: { page: "home" } });
         return;
       }
 
@@ -207,93 +205,6 @@ export function DeeplinkHandler() {
           throw new Error(result.error);
         }
         return;
-      }
-
-      // Handle API key auth
-      if (url.includes("api_key=")) {
-        const apiKey = parsedUrl.searchParams.get("api_key");
-        if (apiKey) {
-          try {
-            await loadUser(apiKey);
-            toast({
-              title: ui("Logged in!"),
-              description: ui("You have been logged in"),
-            });
-            // Notify the chat UI to restart Pi with the new token so it
-            // picks up the new account immediately. The chat component knows
-            // the active session ID; we just pass the key.
-            try {
-              await emit("pi-reauth", { apiKey });
-              console.log("[deeplink] emitted pi-reauth with new auth token");
-            } catch (e) {
-              console.log("[deeplink] pi-reauth emit skipped:", e);
-            }
-          } catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
-            console.error("failed to load user:", msg);
-            toast({
-              title: ui("Failed to load user"),
-              description: msg || ui("Unknown error"),
-            });
-          }
-        }
-      }
-
-      // Hosted Stripe Checkout returns through the website, whose "return to
-      // screenpipe" button opens this link. Refresh the authenticated account
-      // against Stripe-backed entitlement immediately instead of relying only
-      // on AccountSection's background poll.
-      if (isBusinessSubscriptionPurchaseDeepLink(parsedUrl)) {
-        await commands.showWindowActivated({ Home: { page: "account" } });
-        posthog.capture("desktop_upgrade_returned_to_app");
-        if (userToken) {
-          try {
-            await loadUser(userToken, true);
-            toast({
-              title: ui("Subscription active"),
-              description: ui("Screenpipe Business is ready"),
-            });
-          } catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
-            toast({
-              title: ui("Couldn't refresh subscription"),
-              description: msg || ui("Try signing in again"),
-              variant: "destructive",
-            });
-          }
-        } else {
-          toast({
-            title: ui("Sign in to finish"),
-            description: ui("Open Account and sign in with the email used at checkout"),
-          });
-        }
-      }
-
-      // Handle subscription activation deep link.
-      // Louis's email/success page can include:
-      //   screenpipe://subscription-success?purchase_token=<token>
-      // This lets existing app users activate pro without re-logging in.
-      if (
-        parsedUrl.host === "subscription-success" ||
-        parsedUrl.pathname?.includes("subscription-success")
-      ) {
-        const purchaseToken = parsedUrl.searchParams.get("purchase_token");
-        if (purchaseToken) {
-          try {
-            await loadUser(purchaseToken);
-            toast({
-              title: ui("Welcome to screenpipe business!"),
-              description: ui("Your subscription is now active"),
-            });
-          } catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
-            toast({
-              title: ui("Activation failed"),
-              description: msg || ui("Try logging out and back in"),
-              variant: "destructive",
-            });
-          }
-        }
       }
 
       // Handle Google Calendar OAuth callback
@@ -670,10 +581,6 @@ export function DeeplinkHandler() {
         });
       }),
 
-      listen("cli-login", async (event) => {
-        console.log("received cli-login event:", event);
-        await reloadStore();
-      }),
     ]);
 
     return () => {
@@ -688,10 +595,7 @@ export function DeeplinkHandler() {
     toast,
     setShowChangelogDialog,
     openStatusDialog,
-    loadUser,
-    reloadStore,
     setPendingNavigation,
-    userToken,
   ]);
 
   return null; // This component doesn't render anything

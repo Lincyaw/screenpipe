@@ -859,6 +859,14 @@ impl DatabaseManager {
             }).collect::<Vec<_>>().join(",");
             views.push(format!("DROP VIEW IF EXISTS temp.{table}; CREATE TEMP VIEW {table} AS SELECT {projection} FROM _privacy_policy gate CROSS JOIN main.{table} s LEFT JOIN _privacy_exports e ON e.stream='local_{table}' AND e.source_id=CAST(s.id AS TEXT) LEFT JOIN _privacy_release r ON r.kind='exports' AND r.id=CAST(e.id AS TEXT) WHERE gate.id=1;"));
         }
+        // Canonical tags introduced solely by a hidden explicit mark must not
+        // escape through the existing global tag autocomplete surface.
+        let has_explicit_tags: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='explicit_memory_owned_tags')",
+        ).fetch_one(&self.pool).await?;
+        if has_explicit_tags {
+            views.push("DROP VIEW IF EXISTS temp.tags; CREATE TEMP VIEW tags AS SELECT t.* FROM main.tags t CROSS JOIN _privacy_policy p WHERE p.id=1 AND (NOT EXISTS(SELECT 1 FROM explicit_memory_owned_tags o WHERE o.tag_id=t.id) OR EXISTS(SELECT 1 FROM vision_tags v WHERE v.tag_id=t.id) OR EXISTS(SELECT 1 FROM audio_tags a WHERE a.tag_id=t.id) OR EXISTS(SELECT 1 FROM explicit_memory_mark_tags mt JOIN explicit_memory_marks m ON m.id=mt.mark_id WHERE mt.tag_id=t.id AND m.privacy_epoch IS p.revocation));".into());
+        }
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(self.pool.options().get_max_connections())
             .acquire_timeout(Duration::from_secs(5))

@@ -75,6 +75,7 @@ describe("ShortcutSection experimental rollout", () => {
 
     expect(screen.getByText("In-app commands and global hotkeys")).toBeVisible();
     expect(screen.getByText("In app")).toBeVisible();
-    expect(screen.getByText("Next chat tab")).toBeVisible();
+    expect(screen.queryByText("Next chat tab")).toBeNull();
+    expect(screen.queryByText("Toggle AI chat")).toBeNull();
   });
 });

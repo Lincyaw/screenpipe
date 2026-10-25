@@ -3870,7 +3870,7 @@ export function ConnectionsSection({
     () =>
       Object.fromEntries(COMPOSIO_TOOLKITS.map((t) => [t, false])) as ComposioStatusMap
   );
-  const composioToken = composioSettings.user?.token;
+  const composioToken: string | undefined = undefined;
   useEffect(() => {
     if (!composioToken) return;
     fetch(screenpipeWebUrl("/api/composio/status", "https://screenpipe.com"), {
@@ -4070,9 +4070,6 @@ export function ConnectionsSection({
       ...(os === "macos" ? [{ id: "apple-calendar", name: "Apple Calendar", icon: "apple-calendar", connected: appleCalendarConnected }] : []),
       { id: "google-calendar", name: "Google Calendar", icon: "google-calendar", connected: false },
       { id: "google-docs", name: "Google Docs", icon: "google-docs", connected: false },
-      { id: "gmail", name: "Gmail", icon: "gmail", connected: composioConnected.gmail },
-      { id: "google-drive", name: "Google Drive", icon: "google-drive", connected: composioConnected.googledrive },
-      { id: "google-sheets", name: "Google Sheets", icon: "google-sheets", connected: composioConnected.googlesheets },
       { id: "ics-calendar", name: "Other calendars", icon: "ics-calendar", connected: false },
       { id: "remote-agent", name: "Always-on AI", icon: "remote-agent", connected: false },
       { id: "whatsapp", name: "WhatsApp", icon: "whatsapp", connected: false, detected: detectedConnectionIds.has("whatsapp") },
@@ -4308,30 +4305,12 @@ export function ConnectionsSection({
         onDisconnected={() => { setGoogleCalendarConnected(false); notifyConnectionsUpdated(); fetchIntegrations(); }}
       />;
       case "imap": return <ImapCard onChanged={fetchIntegrations} />;
-      case "google-docs": return (
-        <div className="space-y-3">
-          <ComposioCard toolkit="googledocs" initialConnected={composioConnected.googledocs} onChanged={setComposioConnected} />
-          {/* The native Docs connector (documents + drive.file scopes) still
-              works and keeps tokens local — keep it manageable for users who
-              connected before Composio became the primary path. */}
-          {googleDocsConnected && (
-            <details>
-              <summary className="text-[11px] text-muted-foreground cursor-pointer select-none hover:text-foreground">
-                Advanced: manage the legacy google docs connection
-              </summary>
-              <div className="pt-2">
-                <GoogleDocsCard />
-              </div>
-            </details>
-          )}
-        </div>
-      );
-      case "google-drive": return <ComposioCard toolkit="googledrive" initialConnected={composioConnected.googledrive} onChanged={setComposioConnected} />;
-      case "google-sheets": return <ComposioCard toolkit="googlesheets" initialConnected={composioConnected.googlesheets} onChanged={setComposioConnected} />;
-      case "gmail": return <ComposioCard toolkit="gmail" initialConnected={composioConnected.gmail} onChanged={setComposioConnected} />;
+      case "google-docs": return <GoogleDocsCard />;
+      case "google-drive":
+      case "google-sheets":
+      case "gmail": return null;
       case "zoom": return (
         <div className="space-y-3">
-          <ComposioCard toolkit="zoom" initialConnected={composioConnected.zoom} onChanged={setComposioConnected} />
           {/* The legacy Zoom OAuth app was rejected in marketplace review, so its
               authorize page is dead for new connections. Surface the old panel
               only for users who still HAVE a legacy connection (to manage or
@@ -4550,7 +4529,6 @@ export function ConnectionsSection({
                     tile={tile}
                     selected={selected === tile.id}
                     onClick={() => setSelected(selected === tile.id ? null : tile.id)}
-                    onTryInChat={() => tryInChat(tile)}
                   />
                 ))}
               </div>
@@ -4626,7 +4604,6 @@ export function ConnectionsSection({
               tile={tile}
               selected={selected === tile.id}
               onClick={() => setSelected(selected === tile.id ? null : tile.id)}
-              onTryInChat={tile.connected ? () => tryInChat(tile) : undefined}
             />
           ))}
         </div>

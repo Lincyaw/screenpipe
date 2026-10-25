@@ -65,16 +65,14 @@ function makeDeps(overrides: Partial<CommandPaletteDeps> = {}): CommandPaletteDe
   return {
     openSearch: vi.fn(),
     openTimelineOverlay: vi.fn(),
-    newChat: vi.fn(),
     pauseRecording: vi.fn(),
     resumeRecording: vi.fn(),
-    switchRecentChat: vi.fn(),
     goToSection: vi.fn(),
     toggleSidebar: vi.fn(),
     openShortcutGuide: vi.fn(),
     openSettings: vi.fn(),
     sections: [
-      { id: "home", label: "Chat" },
+      { id: "home", label: "Activity" },
       { id: "brain", label: "Library" },
       { id: "meetings", label: "Meetings" },
     ],
@@ -142,12 +140,12 @@ describe("buildPaletteEntries", () => {
     const entries = buildPaletteEntries(makeDeps(), mocks.settings, true);
     const goTo = entries.filter((e) => e.group === "go to");
     expect(goTo.map((e) => e.id)).toEqual(["go_chat", "go_brain", "go_meetings"]);
-    expect(goTo.map((e) => e.label)).toEqual(["Chat", "Library", "Meetings"]);
+    expect(goTo.map((e) => e.label)).toEqual(["Activity", "Library", "Meetings"]);
   });
 
   it("uses word-form hints for in-app chords off macOS", () => {
     const entries = buildPaletteEntries(makeDeps(), mocks.settings, false);
-    expect(entries.find((e) => e.id === "new_chat")?.hint).toBe("Ctrl+N");
+    expect(entries.some((e) => e.id === "new_chat")).toBe(false);
     expect(entries.find((e) => e.id === "toggle_sidebar")?.hint).toBe("Ctrl+B");
   });
 
@@ -159,20 +157,14 @@ describe("buildPaletteEntries", () => {
     expect(entries.some((entry) => entry.id === "open_shortcut_guide")).toBe(false);
   });
 
-  it("exposes recent-chat and shortcut-guide commands for experimental users", () => {
-    const deps = makeDeps();
-    const entries = buildPaletteEntries(deps, mocks.settings, true, true);
-
-    entries.find((entry) => entry.id === "next_recent_chat")?.run();
-    entries.find((entry) => entry.id === "open_shortcut_guide")?.run();
-
-    expect(deps.switchRecentChat).toHaveBeenCalledWith(1);
-    expect(deps.openShortcutGuide).toHaveBeenCalledTimes(1);
-    expect(entries.find((e) => e.id === "next_recent_chat")?.hint).toBe(
-      "⌃Tab",
-    );
-    expect(entries.some((entry) => entry.id.includes("open_chat"))).toBe(false);
+  it("keeps retired chat commands absent even for experimental users", () => {
+    const entries = buildPaletteEntries(makeDeps(), mocks.settings, true, true);
+    for (const id of ["new_chat", "next_recent_chat", "previous_recent_chat"]) {
+      expect(entries.some(entry => entry.id === id)).toBe(false);
+    }
+    expect(entries.some(entry => entry.id === "open_shortcut_guide")).toBe(true);
   });
+
 });
 
 describe("CommandPalette", () => {

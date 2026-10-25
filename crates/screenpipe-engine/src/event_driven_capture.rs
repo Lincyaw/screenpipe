@@ -368,6 +368,8 @@ pub enum CaptureTrigger {
     Idle,
     /// Manual/forced capture request
     Manual,
+    /// Explicit owner intent; UUID and completion travel on a dedicated queue.
+    UserRequested,
 }
 
 /// A trigger plus the correlation IDs of its originating `ui_events` rows.
@@ -533,6 +535,7 @@ impl CaptureTrigger {
             CaptureTrigger::VisualChange => "visual_change",
             CaptureTrigger::Idle => "idle",
             CaptureTrigger::Manual => "manual",
+            CaptureTrigger::UserRequested => "user_requested",
         }
     }
 
@@ -1306,6 +1309,10 @@ pub(crate) async fn event_driven_capture_loop(
     // reader for the entire pause window — defeating the whole point of
     // pausing for battery / lock-screen / DRM reasons.
     let mut was_in_pause_state = false;
+    // No extra per-frame work beyond an empty nonblocking receive. This queue
+    // cannot be coalesced into an earlier frame by the ambient trigger linker.
+    let (_request_registration, mut request_rx, request_notify) =
+        crate::marked_capture::register(&db, monitor_id, monitor.clone(), focus_controller.clone());
 
     #[cfg(all(debug_assertions, target_os = "macos"))]
     let e2e_warm_pause = if let Some(rx) = e2e_warm_pause_profile(monitor.clone()) {
@@ -1319,6 +1326,10 @@ pub(crate) async fn event_driven_capture_loop(
         if stop_signal.load(Ordering::Relaxed) {
             info!("event-driven capture stopping for monitor {}", monitor_id);
             break;
+        }
+        let mut requested_capture = request_rx.try_recv().ok();
+        if requested_capture.as_ref().is_some_and(|request| request.is_expired()) {
+            if let Some(request) = requested_capture.take() { request.reject("capture_timeout"); }
         }
 
         // This is the task-liveness clock. Keep it independent from capture
@@ -1352,6 +1363,7 @@ pub(crate) async fn event_driven_capture_loop(
             || crate::schedule_monitor::schedule_paused();
 
         if in_pause_state {
+            if let Some(request) = requested_capture.take() { request.reject("capture_paused"); }
             if should_release_on_pause_entry(was_in_pause_state, in_pause_state) {
                 info!(
                     "monitor {}: entering pause state (locked={}, power_paused={}, drm={}, schedule={}); releasing capture stream before focus probes",
@@ -1418,7 +1430,7 @@ pub(crate) async fn event_driven_capture_loop(
             screenpipe_screen::CaptureLoopStage::FocusGate,
         );
         let mut warm_trigger_override: Option<CaptureTrigger> = None;
-        {
+        if requested_capture.is_none() {
             use crate::focus_aware_controller::CaptureState;
             // Only the debug-only e2e override below reassigns this.
             #[cfg_attr(not(debug_assertions), allow(unused_mut))]
@@ -1567,6 +1579,7 @@ pub(crate) async fn event_driven_capture_loop(
                     let notify = focus_controller.notify_for(monitor_id);
                     tokio::select! {
                         _ = notify.notified() => {}
+                        _ = request_notify.notified() => {}
                         _ = tokio::time::sleep(Duration::from_secs(5)) => {}
                     }
                     continue;
@@ -1715,7 +1728,9 @@ pub(crate) async fn event_driven_capture_loop(
         #[cfg(target_os = "windows")]
         let mut context_transition_observed = false;
         let mut trigger: Option<CaptureTrigger>;
-        if let Some(warm) = warm_trigger_override.take() {
+        if requested_capture.is_some() {
+            trigger = Some(CaptureTrigger::UserRequested);
+        } else if let Some(warm) = warm_trigger_override.take() {
             trigger = Some(warm);
         } else if trigger_channel_closed {
             trigger = state.poll_activity();
@@ -1964,6 +1979,10 @@ pub(crate) async fn event_driven_capture_loop(
         }
 
         if let Some(trigger) = trigger {
+            if requested_capture.is_some() && screenshot_disabled {
+                if let Some(request) = requested_capture.take() { request.reject("screenshots_disabled"); }
+                continue;
+            }
             #[cfg(target_os = "windows")]
             if windows_capture_needs_context_settle(&trigger, context_transition_observed) {
                 windows_context_settle_until = Some(Instant::now() + CONTEXT_CAPTURE_SETTLE);
@@ -2037,6 +2056,7 @@ pub(crate) async fn event_driven_capture_loop(
                     let trigger_app = drm_trigger_app_name(&trigger);
                     if crate::drm_detector::pre_capture_drm_check(pause_on_drm_content, trigger_app)
                     {
+                        if let Some(request) = requested_capture.take() { request.reject("capture_privacy_blocked"); }
                         debug!(
                             "pre-capture DRM check blocked capture on monitor {}",
                             monitor_id
@@ -2119,6 +2139,23 @@ pub(crate) async fn event_driven_capture_loop(
                     ),
                 )
                 .await;
+
+                // paired_capture returns only after the existing SnapshotWriter
+                // flushed the JPEG and the coordinated frame transaction committed.
+                if let Some(request) = requested_capture.take() {
+                    match &capture_result {
+                        Ok(Ok(output)) => match output.result.as_ref().filter(|result| !result.snapshot_path.is_empty()) {
+                            Some(result) => {
+                                tracing::debug!(request_id = %request.request_id, frame_id = result.frame_id, "intentional capture persisted");
+                                request.complete(crate::marked_capture::CapturedFrame {
+                                    frame_id: result.frame_id, timestamp: result.captured_at.to_rfc3339(), app_name: result.app_name.clone(),
+                                });
+                            }
+                            None => request.reject("capture_privacy_blocked"),
+                        },
+                        _ => request.reject("capture_failed"),
+                    }
+                }
 
                 if !matches!(&capture_result, Ok(Ok(_)))
                     && focus_controller.hosts_focus_for_monitor(&monitor)
@@ -2559,6 +2596,7 @@ fn capture_needs_fresh_pixels(trigger: &CaptureTrigger, context_changed: bool) -
                 | CaptureTrigger::WindowFocus { .. }
                 | CaptureTrigger::Click { .. }
                 | CaptureTrigger::VisualChange
+                | CaptureTrigger::UserRequested
         )
 }
 
@@ -2982,6 +3020,7 @@ fn is_hard_checkpoint_trigger(trigger: &CaptureTrigger) -> bool {
             | CaptureTrigger::ScrollStop
             | CaptureTrigger::Idle
             | CaptureTrigger::Manual
+            | CaptureTrigger::UserRequested
     )
 }
 
@@ -3051,6 +3090,7 @@ fn bypasses_capture_throttles(trigger: &CaptureTrigger) -> bool {
             | CaptureTrigger::WindowFocus { .. }
             | CaptureTrigger::ScrollStop
             | CaptureTrigger::Manual
+            | CaptureTrigger::UserRequested
     )
 }
 

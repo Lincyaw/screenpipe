@@ -167,6 +167,13 @@ impl DatabaseManager {
         let start_str = start.to_rfc3339();
         let end_str = end.to_rfc3339();
 
+        super::explicit_memory::delete_explicit_memory_in_range(
+            &mut **tx.conn(),
+            &start_str,
+            &end_str,
+        )
+        .await?;
+
         // 1. Collect video file paths for chunks that become fully orphaned.
         // Only include files that have been uploaded to cloud (cloud_blob_id IS NOT NULL)
         // or files not managed by archive (no cloud tracking needed for non-archive deletes).
@@ -376,6 +383,13 @@ impl DatabaseManager {
 
         let start_str = start.to_rfc3339();
         let end_str = end.to_rfc3339();
+
+        super::explicit_memory::delete_explicit_memory_in_range(
+            &mut **tx.conn(),
+            &start_str,
+            &end_str,
+        )
+        .await?;
 
         // 1. Collect ALL video file paths for chunks that become fully orphaned.
         // SQL `x NOT IN (..., NULL)` evaluates to UNKNOWN for every row, which
@@ -971,6 +985,9 @@ impl DatabaseManager {
         layout_start: DateTime<Utc>,
     ) -> Result<DeleteTimeRangeResult, sqlx::Error> {
         let mut tx = self.begin_immediate_with_retry().await?;
+        let explicit_memory_epoch = super::explicit_memory::explicit_memory_retention_epoch(
+            &mut **tx.conn(),
+        ).await?;
 
         let start_str = start.to_rfc3339();
         let end_str = end.to_rfc3339();
@@ -1154,6 +1171,10 @@ impl DatabaseManager {
         .bind(&end_str)
         .execute(&mut **tx.conn())
         .await?;
+
+        super::explicit_memory::preserve_explicit_memory_after_retention(
+            &mut **tx.conn(), explicit_memory_epoch,
+        ).await?;
 
         tx.commit().await.map_err(|e| {
             error!(

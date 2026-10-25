@@ -124,7 +124,7 @@ export function AIProviderChoices({
     selectedProvider === "anthropic" ||
     selectedProvider === "native-ollama" ||
     (selectedProvider === "acp" && selectedAcpAgentId === "custom");
-  const [showAdvanced, setShowAdvanced] = useState(advancedSelected);
+  const [showAdvanced, setShowAdvanced] = useState(true);
 
   useEffect(() => {
     if (advancedSelected) setShowAdvanced(true);
@@ -133,19 +133,6 @@ export function AIProviderChoices({
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-        {showScreenpipeCloud && (
-          <AIProviderCard
-            type="screenpipe-cloud"
-            title={ui("Screenpipe")}
-            description={ui("Use screenpipe's AI. Included with your plan.")}
-            imageSrc="/images/screenpipe.png"
-            selected={selectedProvider === "screenpipe-cloud"}
-            onClick={() => onSelectProvider("screenpipe-cloud")}
-            disabled={screenpipeDisabled}
-            warningText={screenpipeDisabled ? "Login required" : undefined}
-          />
-        )}
-
         {acpEnabled &&
           primaryAcpAdapters.map((adapter) => (
             <AIProviderCard

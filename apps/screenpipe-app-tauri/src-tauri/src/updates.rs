@@ -158,6 +158,7 @@ async fn install_windows_update(
 /// The website's /rollback endpoint returns a manifest with a fake high version
 /// so the updater accepts it as an "update".
 pub async fn install_specific_version(app: &tauri::AppHandle, version: &str) -> Result<(), String> {
+    if crate::app_mode::is_local_only() { return Err("Official app updates are disabled for this personal build".into()); }
     if crate::enterprise_persistence::installed() {
         return Err(
             "rollback is unavailable for persistence-managed enterprise installations".to_string(),
@@ -476,6 +477,7 @@ pub async fn await_restart_gate(timeout: Duration, label: &str) -> RestartGate {
 #[tauri::command]
 #[specta::specta]
 pub async fn await_safe_restart(timeout_secs: Option<u64>) -> String {
+    if crate::app_mode::is_local_only() { return "disabled".to_string(); }
     let cap = Duration::from_secs(timeout_secs.unwrap_or(BANNER_GATE_TIMEOUT_SECS));
     let gate = await_restart_gate(cap, "banner-triggered restart").await;
     if gate.should_restart() {
@@ -848,6 +850,7 @@ fn notify_update_state(app: &tauri::AppHandle, title: impl Into<String>, body: i
 /// into the `UPDATE_RESTART_STARTED` guard, which also did nothing visible
 /// (2026-08-11 MacBook Air report).
 pub async fn trigger_update_now(app: tauri::AppHandle) {
+    if crate::app_mode::is_local_only() { return; }
     let manager = app.state::<Arc<UpdatesManager>>().inner().clone();
     if manager.has_update_installed().await {
         // Immediate feedback in the menu itself: the install + relaunch can
@@ -1122,7 +1125,7 @@ impl UpdatesManager {
         let failed_attempt = consume_update_attempt_marker(app);
         let last_failed_update = cooldown_from_failed_attempt(failed_attempt.as_ref());
 
-        let update_menu_item = if is_enterprise_build(app) {
+        let update_menu_item = if crate::app_mode::is_local_only() || is_enterprise_build(app) {
             None
         } else {
             let (menu_text, enabled) = if is_source_build(app) {
@@ -1161,6 +1164,7 @@ impl UpdatesManager {
         show_dialog: bool,
         force: bool,
     ) -> Result<bool, Box<dyn std::error::Error>> {
+        if crate::app_mode::is_local_only() { return Ok(false); }
         // Prevent concurrent update checks (boot check + periodic/manual race)
         if self
             .is_checking
@@ -2045,6 +2049,7 @@ pub fn start_update_check(
     interval_minutes: u64,
 ) -> Result<Arc<UpdatesManager>, Box<dyn std::error::Error>> {
     let updates_manager = Arc::new(UpdatesManager::new(app, interval_minutes)?);
+    if crate::app_mode::is_local_only() { return Ok(updates_manager); }
 
     // Clean up old rollback directory if it exists (legacy, no longer needed)
     {

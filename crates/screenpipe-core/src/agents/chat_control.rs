@@ -4,7 +4,7 @@
 
 //! Core chat discovery and delivery for screenpipe agents.
 //!
-//! Search, target validation, external-runtime delivery, and the private
+//! External transcript context, local target validation, and the private
 //! agent-to-host protocol live here. The desktop app implements only the
 //! [`ScreenpipeChatHost`] adapter because it owns the live Pi process pool.
 
@@ -72,11 +72,9 @@ impl ChatSource {
         }
     }
 
-    /// Gemini CLI has no non-interactive resume, so its chats are searchable
-    /// but cannot be steered. Everything else has a documented queue/resume
-    /// entry point.
+    /// External sessions supply context; continue them in their own app.
     pub fn supports_send(self) -> bool {
-        !matches!(self, Self::Gemini)
+        matches!(self, Self::Screenpipe)
     }
 }
 
@@ -374,6 +372,12 @@ fn parse_screenpipe_chat(path: &Path) -> Result<(ChatSearchResult, Value, String
         .and_then(Value::as_str)
         .ok_or_else(|| "missing chat id".to_string())?
         .to_string();
+    if value
+        .get("importedFrom")
+        .is_some_and(|source| !source.is_null())
+    {
+        return Err("external session records are context, not screenpipe chats".into());
+    }
     let kind = value.get("kind").and_then(Value::as_str).unwrap_or("chat");
     if kind != "chat" {
         return Err("not a user chat".to_string());
@@ -838,7 +842,10 @@ fn codex_session_files() -> Vec<PathBuf> {
     let Ok(home) = home_dir() else {
         return Vec::new();
     };
-    let root = home.join(".codex").join("sessions");
+    codex_session_files_in(&home.join(".codex/sessions"))
+}
+
+fn codex_session_files_in(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for year in descending_subdirectories(&root) {
         for month in descending_subdirectories(&year) {
@@ -1183,6 +1190,120 @@ async fn search_codex_recents(limit: usize) -> Result<SourceSearch, String> {
     .map_err(|error| format!("codex recents failed: {error}"))
 }
 
+/// Read local agent transcripts without starting an agent process. These are
+/// historical context, never executable instructions or proof of completed work.
+/// Both discovery and text are bounded; consumers must retain coverage warnings.
+pub async fn session_context(
+    query: String,
+    source: Option<ChatSource>,
+    id: Option<String>,
+    limit: usize,
+) -> Result<Value, String> {
+    if source == Some(ChatSource::Screenpipe) || query.len() > 1_000 {
+        return Err("use an external agent source and a query of at most 1000 bytes".into());
+    }
+    if id
+        .as_ref()
+        .is_some_and(|id| id.is_empty() || id.len() > 200 || id.contains(['/', '\\']))
+    {
+        return Err("invalid session id".into());
+    }
+    if id.is_some() && source.is_none() {
+        return Err("source is required when reading a session".into());
+    }
+    let home = [
+        "SCREENPIPE_E2E_EXTERNAL_CHAT_HOME",
+        "SCREENPIPE_AI_TOOLS_HOME",
+    ]
+    .into_iter()
+    .find_map(|name| std::env::var_os(name).filter(|value| !value.is_empty()))
+    .map(PathBuf::from)
+    .map(Ok)
+    .unwrap_or_else(home_dir)?;
+    tokio::task::spawn_blocking(move || session_context_in(&home, query, source, id, limit))
+        .await
+        .map_err(|_| "session context reader failed".to_string())?
+}
+
+fn session_context_in(
+    home: &Path,
+    query: String,
+    source: Option<ChatSource>,
+    id: Option<String>,
+    limit: usize,
+) -> Result<Value, String> {
+    let mut results = Vec::new();
+    let mut warnings = Vec::new();
+    for candidate in [
+        ChatSource::Codex,
+        ChatSource::Claude,
+        ChatSource::Cursor,
+        ChatSource::Gemini,
+    ] {
+        if source.is_some_and(|source| source != candidate) {
+            continue;
+        }
+        let files = match candidate {
+            ChatSource::Codex => codex_session_files_in(&home.join(".codex/sessions")),
+            ChatSource::Claude => collect_jsonl_files(&home.join(".claude/projects")),
+            ChatSource::Cursor => collect_jsonl_files(&home.join(".cursor/projects"))
+                .into_iter()
+                .filter(|path| path.to_string_lossy().contains("agent-transcripts"))
+                .collect(),
+            ChatSource::Gemini => collect_jsonl_files(&home.join(".gemini/tmp"))
+                .into_iter()
+                .filter(|path| {
+                    path.parent()
+                        .is_some_and(|parent| parent.ends_with("chats"))
+                })
+                .collect(),
+            ChatSource::Screenpipe => unreachable!(),
+        };
+        let cap = if id.is_some() {
+            MAX_EXTERNAL_FILES
+        } else {
+            MAX_BODY_SCAN_FILES
+        };
+        if files.len() >= cap {
+            warnings.push(truncated_scan_warning(candidate));
+        }
+        for path in files.into_iter().take(cap) {
+            let parsed = match candidate {
+                ChatSource::Codex => parse_codex_chat(&path),
+                ChatSource::Claude => parse_claude_chat(&path),
+                ChatSource::Cursor => parse_cursor_chat(&path),
+                ChatSource::Gemini => parse_gemini_chat(&path),
+                ChatSource::Screenpipe => unreachable!(),
+            };
+            let Ok((mut summary, body)) = parsed else {
+                continue;
+            };
+            summary.can_send = false;
+            summary.state = "recorded".into();
+            if let Some(id) = id.as_ref() {
+                if summary.id == *id {
+                    return Ok(json!({"session": summary, "text": body,
+                            "coverage": "bounded_prefix", "max_lines": MAX_BODY_LINES,
+                            "max_characters": MAX_SEARCH_BODY_CHARS,
+                            "historical": true, "warnings": warnings}));
+                }
+            } else if query_matches(&summary, &query, &body) {
+                results.push(summary);
+            }
+        }
+    }
+    if id.is_some() {
+        return Err("session not found in the bounded local scan".into());
+    }
+    results.sort_by_key(|result| std::cmp::Reverse(result.updated_at));
+    let has_more = results.len() > limit.clamp(1, MAX_LIMIT);
+    results.truncate(limit.clamp(1, MAX_LIMIT));
+    Ok(
+        json!({"results": results, "warnings": warnings, "has_more": has_more,
+            "historical": true, "coverage": "bounded_local_transcripts"}),
+    )
+}
+
 pub async fn search(
     request: ChatSearchRequest,
     running_screenpipe_ids: &HashSet<String>,
@@ -1294,216 +1415,6 @@ pub fn conversation_history_prompt(conversation: &Value, message: &str) -> Strin
     }
 }
 
-async fn command_output(
-    program: &str,
-    args: &[String],
-    cwd: Option<&str>,
-    timeout: Duration,
-) -> Result<String, String> {
-    let mut command = Command::new(program);
-    command.args(args).stdin(Stdio::null());
-    if let Some(cwd) = cwd.filter(|cwd| Path::new(cwd).is_dir()) {
-        command.current_dir(cwd);
-    }
-    let output = tokio::time::timeout(timeout, command.output())
-        .await
-        .map_err(|_| format!("{program} did not acknowledge the message in time"))?
-        .map_err(|error| format!("could not start {program}: {error}"))?;
-    if !output.status.success() {
-        let detail = compact_text(&String::from_utf8_lossy(&output.stderr), 500);
-        return Err(format!(
-            "{program} exited with {}{}",
-            output.status,
-            if detail.is_empty() {
-                String::new()
-            } else {
-                format!(": {detail}")
-            }
-        ));
-    }
-    Ok(compact_text(&String::from_utf8_lossy(&output.stdout), 500))
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct ExternalCommandSpec {
-    program: &'static str,
-    args: Vec<String>,
-    background: bool,
-}
-
-fn external_command_spec(
-    source: ChatSource,
-    id: &str,
-    message: &str,
-) -> Result<ExternalCommandSpec, String> {
-    match source {
-        ChatSource::Codex => Ok(ExternalCommandSpec {
-            program: "codex",
-            args: vec![
-                "queue".to_string(),
-                "--thread".to_string(),
-                id.to_string(),
-                "--message".to_string(),
-                message.to_string(),
-            ],
-            background: false,
-        }),
-        ChatSource::Claude => Ok(ExternalCommandSpec {
-            program: "claude",
-            args: vec![
-                "--resume".to_string(),
-                id.to_string(),
-                "--bg".to_string(),
-                message.to_string(),
-            ],
-            background: false,
-        }),
-        ChatSource::Cursor => Ok(ExternalCommandSpec {
-            program: "cursor-agent",
-            args: vec![
-                "--print".to_string(),
-                "--resume".to_string(),
-                id.to_string(),
-                message.to_string(),
-            ],
-            background: true,
-        }),
-        ChatSource::Gemini => {
-            Err("Gemini CLI chats are search-only; it has no non-interactive resume".to_string())
-        }
-        ChatSource::Screenpipe => Err("screenpipe uses the native Pi queue".to_string()),
-    }
-}
-
-async fn send_external(
-    request: &ChatSendRequest,
-    target: &ChatSearchResult,
-) -> Result<(Option<String>, String), String> {
-    let spec = external_command_spec(request.source, &request.id, &request.message)?;
-    if spec.background {
-        let mut command = Command::new(spec.program);
-        command
-            .args(&spec.args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Some(cwd) = target
-            .workspace
-            .as_deref()
-            .filter(|cwd| Path::new(cwd).is_dir())
-        {
-            command.current_dir(cwd);
-        }
-        let child = command
-            .spawn()
-            .map_err(|error| format!("could not start {}: {error}", spec.program))?;
-        return Ok((
-            child.id().map(|id| id.to_string()),
-            "Cursor resume process started".to_string(),
-        ));
-    }
-
-    let output = command_output(
-        spec.program,
-        &spec.args,
-        target.workspace.as_deref(),
-        if request.source == ChatSource::Claude {
-            Duration::from_secs(15)
-        } else {
-            Duration::from_secs(10)
-        },
-    )
-    .await?;
-    match request.source {
-        ChatSource::Codex => Ok((
-            None,
-            if output.is_empty() {
-                "Codex accepted the queued message".to_string()
-            } else {
-                output
-            },
-        )),
-        ChatSource::Claude => Ok((
-            None,
-            if output.is_empty() {
-                "Claude accepted the background message".to_string()
-            } else {
-                output
-            },
-        )),
-        ChatSource::Cursor => unreachable!("background Cursor command returned above"),
-        ChatSource::Gemini | ChatSource::Screenpipe => {
-            unreachable!("unsendable sources are rejected before delivery")
-        }
-    }
-}
-
-async fn resolve_external_target(source: ChatSource, id: &str) -> Result<ChatSearchResult, String> {
-    let found = match source {
-        ChatSource::Codex => {
-            let id = id.to_string();
-            tokio::task::spawn_blocking(move || {
-                search_local_transcripts(
-                    codex_session_files(),
-                    &id,
-                    MAX_LIMIT,
-                    |_| true,
-                    parse_codex_chat,
-                )
-            })
-            .await
-            .map_err(|error| error.to_string())??
-            .results
-        }
-        ChatSource::Claude => {
-            let id = id.to_string();
-            tokio::task::spawn_blocking(move || search_claude(&id, MAX_LIMIT))
-                .await
-                .map_err(|error| error.to_string())??
-                .results
-        }
-        ChatSource::Cursor => {
-            let id = id.to_string();
-            tokio::task::spawn_blocking(move || search_cursor(&id, MAX_LIMIT))
-                .await
-                .map_err(|error| error.to_string())??
-                .results
-        }
-        ChatSource::Gemini | ChatSource::Screenpipe => {
-            return Err(format!("{} chats cannot be resumed", source.label()))
-        }
-    };
-    found
-        .into_iter()
-        .find(|result| result.id == id)
-        .ok_or_else(|| {
-            format!(
-                "{} chat id was not found; search again and use an exact result id",
-                source.label()
-            )
-        })
-}
-
-fn ensure_external_target_is_not_origin(request: &ChatSendRequest) -> Result<(), String> {
-    let Some(origin_id) = request.origin_session_id.as_deref() else {
-        return Ok(());
-    };
-    let Ok(path) = screenpipe_chat_path(origin_id) else {
-        return Ok(());
-    };
-    let Ok((_summary, conversation, _searchable)) = parse_screenpipe_chat(&path) else {
-        return Ok(());
-    };
-    if conversation_resumes_target(&conversation, &request.id) {
-        return Err("refused to send an ACP-backed chat to its own resumed session".to_string());
-    }
-    Ok(())
-}
-
-fn conversation_resumes_target(conversation: &Value, target_id: &str) -> bool {
-    conversation.get("acpSessionId").and_then(Value::as_str) == Some(target_id)
-}
-
 #[derive(Clone, Debug)]
 pub struct ScreenpipeChat {
     pub summary: ChatSearchResult,
@@ -1583,30 +1494,10 @@ pub async fn send<H: ScreenpipeChatHost + ?Sized>(
             detail: delivery.detail,
         }
     } else {
-        if !request.source.supports_send() {
-            return Err(format!(
-                "{} chats are search-only in screenpipe; continue them in their own CLI",
-                request.source.label()
-            ));
-        }
-        if matches!(request.mode, DeliveryMode::Steer) {
-            return Err("steer mode is only available for a running screenpipe chat".to_string());
-        }
-        ensure_external_target_is_not_origin(&request)?;
-        let target = resolve_external_target(request.source, &request.id).await?;
-        let (delivery_id, detail) = send_external(&request, &target).await?;
-        ChatSendResponse {
-            status: if request.source == ChatSource::Cursor {
-                "started".to_string()
-            } else {
-                "accepted".to_string()
-            },
-            source: request.source,
-            id: request.id,
-            title: target.title,
-            delivery_id,
-            detail,
-        }
+        return Err(format!(
+            "{} sessions are read-only context; continue them in their own app",
+            request.source.label()
+        ));
     };
     Ok(response)
 }
@@ -2086,49 +1977,108 @@ mod tests {
         assert!(screenpipe_chat_path("valid-chat-id").is_ok());
     }
 
-    #[test]
-    fn external_resume_commands_match_installed_cli_contracts() {
-        assert_eq!(
-            external_command_spec(ChatSource::Codex, "codex-id", "continue").unwrap(),
-            ExternalCommandSpec {
-                program: "codex",
-                args: vec!["queue", "--thread", "codex-id", "--message", "continue"]
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-                background: false,
-            }
-        );
-        assert_eq!(
-            external_command_spec(ChatSource::Claude, "claude-id", "continue").unwrap(),
-            ExternalCommandSpec {
-                program: "claude",
-                args: vec!["--resume", "claude-id", "--bg", "continue"]
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-                background: false,
-            }
-        );
-        assert!(external_command_spec(ChatSource::Gemini, "gemini-id", "continue").is_err());
-        assert!(!ChatSource::Gemini.supports_send());
-        assert_eq!(
-            external_command_spec(ChatSource::Cursor, "cursor-id", "continue").unwrap(),
-            ExternalCommandSpec {
-                program: "cursor-agent",
-                args: vec!["--print", "--resume", "cursor-id", "continue"]
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-                background: true,
-            }
-        );
+    #[tokio::test]
+    async fn external_sessions_cannot_be_resumed() {
+        for source in [
+            ChatSource::Codex,
+            ChatSource::Claude,
+            ChatSource::Cursor,
+            ChatSource::Gemini,
+        ] {
+            let result = send(
+                &TestHost,
+                ChatSendRequest {
+                    source,
+                    id: "fixture-id".into(),
+                    message: "continue".into(),
+                    mode: DeliveryMode::Queue,
+                    confirmed: true,
+                    origin_session_id: None,
+                },
+            )
+            .await;
+            assert!(result.unwrap_err().contains("read-only context"));
+        }
     }
+}
+
+#[cfg(test)]
+mod session_context_tests {
+    use super::*;
 
     #[test]
-    fn origin_acp_session_cannot_send_to_itself() {
-        let conversation = json!({ "acpSessionId": "same-session" });
-        assert!(conversation_resumes_target(&conversation, "same-session"));
-        assert!(!conversation_resumes_target(&conversation, "other-session"));
+    fn session_context_search_and_read_are_historical() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().join(".codex/sessions/2026/10/24");
+        fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("rollout-fixture.jsonl");
+        fs::write(&file, concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"fixture-id\",\"cwd\":\"/project\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Investigate the capture backlog\"}]}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Keep recordings durable\"}]}}\n"
+        )).unwrap();
+        let result = session_context_in(
+            home.path(),
+            "durable".into(),
+            Some(ChatSource::Codex),
+            None,
+            10,
+        )
+        .unwrap();
+        assert_eq!(result["results"][0]["id"], "fixture-id");
+        assert_eq!(result["results"][0]["can_send"], false);
+        assert_eq!(result["results"][0]["state"], "recorded");
+        let detail = session_context_in(
+            home.path(),
+            String::new(),
+            Some(ChatSource::Codex),
+            Some("fixture-id".into()),
+            10,
+        )
+        .unwrap();
+        assert!(detail["text"]
+            .as_str()
+            .unwrap()
+            .contains("Keep recordings durable"));
+        assert_eq!(detail["coverage"], "bounded_prefix");
+        assert_eq!(detail["historical"], true);
+        assert!(session_context_in(
+            home.path(),
+            String::new(),
+            Some(ChatSource::Codex),
+            Some("missing".into()),
+            10
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn session_context_rejects_paths_and_nonexternal_sources() {
+        assert!(session_context(
+            String::new(),
+            Some(ChatSource::Codex),
+            Some("../private".into()),
+            1
+        )
+        .await
+        .is_err());
+        assert!(
+            session_context(String::new(), Some(ChatSource::Screenpipe), None, 1)
+                .await
+                .is_err()
+        );
+        assert!(
+            session_context(String::new(), None, Some("fixture-id".into()), 1)
+                .await
+                .is_err()
+        );
+        for source in [
+            ChatSource::Codex,
+            ChatSource::Claude,
+            ChatSource::Cursor,
+            ChatSource::Gemini,
+        ] {
+            assert!(!source.supports_send());
+        }
     }
 }

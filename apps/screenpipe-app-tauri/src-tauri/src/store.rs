@@ -1312,7 +1312,7 @@ pub const TRIAL_ACTIVATION_UNLOCKED_STEP: &str = "trial-activation-v1-unlocked";
 // Set false in a later release to migrate every persisted treatment install
 // out of the gate, including offline users who cannot receive the PostHog
 // force-unlock flag.
-pub const TRIAL_ACTIVATION_ROLLOUT_ENABLED: bool = true;
+pub const TRIAL_ACTIVATION_ROLLOUT_ENABLED: bool = false;
 
 pub fn trial_activation_dev_force_enabled() -> bool {
     cfg!(debug_assertions) && option_env!("SCREENPIPE_TRIAL_ACTIVATION_DEV") == Some("1")
@@ -1329,23 +1329,8 @@ impl OnboardingStore {
     /// The summary-first trial treatment keeps product surfaces behind the
     /// first valid summary and the card-backed trial. Settings and connection
     /// setup are explicitly exempted by the window/router callers.
-    pub fn blocks_trial_activation_app(&self) -> bool {
-        self.trial_activation_fresh_install
-            && self.is_completed
-            && matches!(
-                self.current_step.as_deref(),
-                Some(TRIAL_ACTIVATION_SUMMARY_STEP | TRIAL_ACTIVATION_PAYWALL_STEP)
-            )
-    }
-
-    /// Capture is required while the first result is being built. It stops
-    /// only after that result has actually rendered and the durable paywall
-    /// sentinel is written.
-    pub fn blocks_trial_activation_recording(&self) -> bool {
-        self.trial_activation_fresh_install
-            && self.is_completed
-            && self.current_step.as_deref() == Some(TRIAL_ACTIVATION_PAYWALL_STEP)
-    }
+    pub fn blocks_trial_activation_app(&self) -> bool { false }
+    pub fn blocks_trial_activation_recording(&self) -> bool { false }
 
     fn apply_trial_activation_rollout(&mut self, enabled: bool) -> bool {
         if enabled
@@ -1532,6 +1517,8 @@ pub struct SettingsStore {
     pub lock_vault_shortcut: String,
     #[serde(rename = "starSessionShortcut", default)]
     pub star_session_shortcut: String,
+    #[serde(rename = "captureAnnotateShortcut", default)]
+    pub capture_annotate_shortcut: String,
     /// Overlay size: "small" (default), "medium" (1.5x), "large" (2x)
     #[serde(rename = "shortcutOverlaySize", default = "default_overlay_size")]
     pub shortcut_overlay_size: String,
@@ -1559,14 +1546,14 @@ pub struct SettingsStore {
     pub device_id: String,
     /// Auto-install updates and restart when a new version is available.
     /// When disabled, users must click "update now" in the tray menu.
-    #[serde(rename = "autoUpdate", default = "default_true")]
+    #[serde(rename = "autoUpdate", default)]
     pub auto_update: bool,
     /// Consumer updater channel selected on this device. Older stores omit it
     /// and therefore remain on the stable channel.
     #[serde(rename = "updateChannel", default = "default_update_channel")]
     pub update_channel: String,
     /// Auto-update store-installed pipes that haven't been locally modified.
-    #[serde(rename = "autoUpdatePipes", default = "default_true")]
+    #[serde(rename = "autoUpdatePipes", default)]
     pub auto_update_pipes: bool,
     /// Use screenpipe cloud for AI-powered features like suggestions.
     /// Better quality but sends activity context to the cloud (zero data retention).
@@ -1773,10 +1760,10 @@ impl Default for AIPreset {
         Self {
             id: String::new(),
             prompt: String::new(),
-            provider: AIProviderType::ScreenpipeCloud,
+            provider: AIProviderType::NativeOllama,
             acp_agent: None,
-            url: "https://api.screenpipe.com/v1".to_string(),
-            model: "qwen/qwen3.5-flash-02-23".to_string(),
+            url: "http://localhost:11434".to_string(),
+            model: "qwen3:8b".to_string(),
             default_preset: false,
             enterprise_managed: false,
             api_key: None,
@@ -1938,7 +1925,7 @@ impl AudioEngineFallbackReason {
     pub fn notification_body(&self) -> &'static str {
         match self {
             Self::NotLoggedIn => {
-                "You are not logged in, so audio is being transcribed locally with Whisper Turbo (fast). Log in to use Screenpipe Cloud."
+                "Audio is being transcribed on this device with Whisper Turbo (fast)."
             }
             Self::MissingDeepgramKey => {
                 "Deepgram has no API key configured, so audio is being transcribed locally with Whisper Turbo (fast)."
@@ -2040,17 +2027,17 @@ impl Default for SettingsStore {
 
         // Default AI preset - works without login
         let default_free_preset = AIPreset {
-            id: "screenpipe-cloud".to_string(),
+            id: "local".to_string(),
             prompt: r#"IMPORTANT: At the start of every conversation, read the files in .pi/skills/ directory (e.g. .pi/skills/screenpipe-api/SKILL.md and .pi/skills/screenpipe-cli/SKILL.md) before responding.
 Rules:
 - Media: use standard markdown with angle-bracket local paths, like ![description](</path/to/file.mp4>) for videos and ![description](</path/to/image.jpg>) for images
 - Always wrap local file paths in angle brackets because screenpipe paths often contain spaces or parentheses
 - Always answer my question/intent, do not make up things
 "#.to_string(),
-            provider: AIProviderType::ScreenpipeCloud,
+            provider: AIProviderType::NativeOllama,
             acp_agent: None,
-            url: "https://api.screenpipe.com/v1".to_string(),
-            model: "auto".to_string(),
+            url: "http://localhost:11434".to_string(),
+            model: "qwen3:8b".to_string(),
             default_preset: true,
             enterprise_managed: false,
             api_key: None,
@@ -2179,6 +2166,7 @@ Rules:
                 "Control+Super+B"
             }
             .to_string(),
+            capture_annotate_shortcut: if cfg!(target_os = "windows") { "Alt+Shift+M" } else { "Control+Super+M" }.to_string(),
             shortcut_overlay_size: "small".to_string(),
             shortcut_overlay_anchor: default_overlay_anchor(),
             shortcut_overlay_display: String::new(),
@@ -2186,11 +2174,11 @@ Rules:
             shortcut_overlay_snoozed_until: None,
             allow_hiding_shortcut_overlay: false,
             device_id: uuid::Uuid::new_v4().to_string(),
-            auto_update: true,
+            auto_update: false,
             update_channel: default_update_channel(),
-            auto_update_pipes: true,
+            auto_update_pipes: false,
             enhanced_ai: false,
-            remote_log_collection_enabled: true,
+            remote_log_collection_enabled: false,
             remote_log_collection_user_id: None,
             #[cfg(target_os = "macos")]
             overlay_mode: "fullscreen".to_string(),
@@ -2287,6 +2275,41 @@ impl SettingsStore {
                 }
             }
         }
+        if let Some(obj) = val.as_object_mut() {
+            obj.insert("user".into(), serde_json::to_value(User::default()).unwrap_or_else(|_| serde_json::json!({})));
+            obj.insert("userId".into(), serde_json::json!(""));
+            for name in ["autoUpdate", "autoUpdatePipes", "remoteLogCollectionEnabled", "dataSyncEnabled", "cloudSyncEnabled", "enableCloudSync", "cloudArchiveEnabled", "shareData"] {
+                obj.insert(name.into(), serde_json::json!(false));
+            }
+            obj.insert("remoteLogCollectionUserId".into(), serde_json::Value::Null);
+            obj.insert("piiBackend".into(), serde_json::json!("local"));
+            if obj.get("audioTranscriptionEngine").and_then(Value::as_str) == Some("screenpipe-cloud") {
+                obj.insert("audioTranscriptionEngine".into(), serde_json::json!("whisper-large-v3-turbo-quantized"));
+            }
+            if let Some(presets) = obj.get_mut("aiPresets").and_then(Value::as_array_mut) {
+                for preset in presets {
+                    let Some(preset) = preset.as_object_mut() else { continue };
+                    if let Some(agent) = preset.get_mut("acpAgent").and_then(Value::as_object_mut) {
+                        agent.insert("useScreenpipeCloud".into(), serde_json::json!(false));
+                    }
+                    let url = preset.get("url").and_then(Value::as_str).unwrap_or_default();
+                    let screenpipe_host = url::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_owned))
+                        .is_some_and(|host| host == "screenpipe.com" || host.ends_with(".screenpipe.com") || host == "screenpi.pe" || host.ends_with(".screenpi.pe"));
+                    if screenpipe_host || matches!(preset.get("provider").and_then(Value::as_str), Some("screenpipe-cloud" | "pi")) {
+                        let custom = !url.is_empty() && !screenpipe_host;
+                        if custom {
+                            preset.insert("provider".into(), serde_json::json!("custom"));
+                        } else {
+                            preset.insert("provider".into(), serde_json::json!("native-ollama"));
+                            preset.insert("url".into(), serde_json::json!("http://localhost:11434"));
+                            preset.insert("model".into(), serde_json::json!("qwen3:8b"));
+                            preset.insert("apiKey".into(), Value::Null);
+                        }
+                        preset.insert("enterpriseManaged".into(), serde_json::json!(false));
+                    }
+                }
+            }
+        }
         val
     }
 
@@ -2375,6 +2398,7 @@ impl SettingsStore {
     /// clone with overrides for fields that need special handling (e.g. user_id
     /// comes from the User auth object, user_name has a fallback chain).
     fn resolved_cloud_auth_token(&self, cached_token: Option<String>) -> Option<String> {
+        if crate::app_mode::is_local_only() { return None; }
         self.user
             .token
             .clone()
@@ -2389,6 +2413,9 @@ impl SettingsStore {
 
     pub fn to_recording_settings(&self) -> screenpipe_config::RecordingSettings {
         let mut settings = self.recording.clone();
+        // Keep model-backed privacy processing on-device; a missing model
+        // leaves protected reads pending without stopping durable recording.
+        settings.pii_backend = "local".into();
         // App context is built in, even for old stores with the toggle off.
         // The remote emergency shutoff below still takes precedence.
         settings.enable_semantic_context = true;
@@ -2496,16 +2523,7 @@ impl SettingsStore {
         {
             config.port = p;
         }
-        match self.local_plan_policy() {
-            LocalPlanPolicy::VerifiedFree => {
-                config.max_non_template_pipes = Some(2);
-            }
-            LocalPlanPolicy::Unknown => {
-                // Unknown must never inherit paid/unlimited behavior.
-                config.max_non_template_pipes = Some(2);
-            }
-            LocalPlanPolicy::VerifiedPaid => {}
-        }
+        config.max_non_template_pipes = None;
         config
     }
 
@@ -2611,9 +2629,7 @@ impl SettingsStore {
         self.local_plan_policy() != LocalPlanPolicy::VerifiedPaid
     }
 
-    pub(crate) fn restricts_paid_local_features(&self) -> bool {
-        self.is_free_or_unattributed_user()
-    }
+    pub(crate) fn restricts_paid_local_features(&self) -> bool { false }
 
     pub(crate) fn has_account_identity(&self) -> bool {
         [self.user.id.as_deref(), self.user.clerk_id.as_deref()]
@@ -2640,6 +2656,7 @@ impl SettingsStore {
     /// app screen. A separate consumer subscription remains a valid opt-out,
     /// matching the frontend account-routing policy.
     pub(crate) fn requires_enterprise_app_for_consumer(&self) -> bool {
+        if crate::app_mode::is_local_only() { return false; }
         let requires_enterprise_app = self
             .user
             .enterprise_account
@@ -2676,15 +2693,13 @@ impl SettingsStore {
     }
 
     pub fn audio_engine_resolution(&self) -> AudioEngineResolution {
-        let has_cloud_auth = self
-            .resolved_cloud_auth_token(crate::auth_token::cached_cloud_token())
-            .is_some();
+        let has_cloud_auth = false;
         self.audio_engine_resolution_with_cloud_auth(has_cloud_auth)
     }
 
     fn audio_engine_resolution_with_cloud_auth(
         &self,
-        has_cloud_auth: bool,
+        _has_cloud_auth: bool,
     ) -> AudioEngineResolution {
         let engine = self.recording.audio_transcription_engine.clone();
         let has_deepgram_key = !self.recording.deepgram_api_key.is_empty()
@@ -2700,8 +2715,8 @@ impl SettingsStore {
             // Any signed-in account may use cloud transcription — the free tier
             // includes a cloud transcription allowance enforced server-side.
             // Never gate on subscription/entitlement here.
-            "screenpipe-cloud" if !has_cloud_auth => {
-                tracing::warn!("screenpipe-cloud selected but user not logged in, falling back to whisper-large-v3-turbo-quantized");
+            "screenpipe-cloud" => {
+                tracing::warn!("using local Whisper transcription for this personal build");
                 resolution.active = fallback;
                 resolution.fallback_reason = Some(AudioEngineFallbackReason::NotLoggedIn);
             }
@@ -3076,6 +3091,7 @@ pub fn init_store(app: &AppHandle) -> Result<SettingsStore, String> {
 
     if !managed_mode
         && can_run_settings_migrations
+        && !crate::app_mode::is_local_only()
         && migrate_remote_logs_default_enabled(&mut store)
     {
         should_save = true;

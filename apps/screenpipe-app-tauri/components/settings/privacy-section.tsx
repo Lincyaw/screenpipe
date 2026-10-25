@@ -1,6 +1,5 @@
 "use client";
 import { PrivacyProcessingStatus } from "./privacy-processing-status";
-import { WorkflowSharingControls } from "@/components/workflows/workflow-sharing-controls";
 
 // screenpipe — AI that knows everything you've seen, said, or heard
 // https://screenpipe.com
@@ -1358,7 +1357,6 @@ export function PrivacySection() {
       </div>
 
       {/* Data Protection */}
-      <WorkflowSharingControls />
       <LockedSetting settingKey="pii_removal">
       <div className="space-y-2">
         <h2 className="text-xs font-semibold text-muted-foreground normal-case tracking-wider px-1">

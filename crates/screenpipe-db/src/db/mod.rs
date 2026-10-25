@@ -461,9 +461,22 @@ mod activity_ledger;
 mod audio;
 mod display_layout;
 mod elements;
+mod explicit_memory;
+pub use explicit_memory::{
+    ExplicitMemoryAnchor, ExplicitMemoryError, ExplicitMemoryImage, ExplicitMemoryMark,
+    ExplicitMemoryQuery, NewExplicitMemoryMark, UpdateExplicitMemoryMark,
+    EXPLICIT_MEMORY_MAX_IMAGE_BYTES,
+};
 mod feedback;
 mod frames;
+mod hierarchical_memory;
+pub use hierarchical_memory::{MemoryNode, MemoryEvidence, MemoryNodeDetail, MemoryTreeQuery,
+    MemoryIndexJob, MemoryIndexStatus, MemorySearchHit, MemoryNodeCorrection};
+mod hierarchy_summary;
+pub use hierarchy_summary::{HierarchySummary, HierarchySummaryConfig, HierarchySummaryJob, HierarchySummaryCounts, SummaryCitation, SummaryCoverage, SummaryStatement, SummarySourceVersion};
 mod maintenance;
+mod marked_capture;
+pub use marked_capture::{MarkedCaptureOutcome, MarkedCaptureRequest};
 mod meetings;
 mod memories;
 #[cfg(test)]

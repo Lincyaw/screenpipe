@@ -4,71 +4,30 @@
 "use client";
 
 import { PRIVACY_STATUS_POLL_INTERVAL_MS } from "@/lib/privacy-processing";
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { useRouter } from "next/navigation";
 import posthog from "posthog-js";
-import {
-  AppWindow,
-  AudioLines,
-  CalendarDays,
-  CalendarRange,
-  RefreshCw,
-  Users,
-} from "lucide-react";
+import { AppWindow, AudioLines, CalendarDays, CalendarRange, RefreshCw, Users } from "lucide-react";
 import { format } from "date-fns";
 import type { DateRange } from "react-day-picker";
 
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { faviconUrl } from "@/components/settings/capture-filters/icon-urls";
 import { AIPresetsSelector } from "@/components/rewind/ai-presets-selector";
 import { getRootDomain } from "@/components/rewind/timeline/favicon-utils";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/select";
-import {
-  type ActivityHistoryDocument,
-  type ActivityHistoryEvidence,
-  type ActivityHistoryEntry,
-  type ActivityReviewMeeting,
-} from "@/lib/activity-review-prompt";
-import {
-  nextActivityHistoryRange,
-  type ActivityHistoryCoverage,
-} from "@/lib/activity-history-persistence";
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
+import { type ActivityHistoryDocument, type ActivityHistoryEvidence, type ActivityHistoryEntry, type ActivityReviewMeeting } from "@/lib/activity-review-prompt";
+import { nextActivityHistoryRange, type ActivityHistoryCoverage } from "@/lib/activity-history-persistence";
 import { localFetch, refreshApiConfig } from "@/lib/api";
-import {
-  getFramePreviewMediaUrl,
-  getFramePreviewThumbnailUrl,
-} from "@/lib/frame-thumbnails";
+import { getFramePreviewMediaUrl, getFramePreviewThumbnailUrl } from "@/lib/frame-thumbnails";
 import { presentQuotaError } from "@/lib/chat/quota-errors";
-import { showChatWithPrefill } from "@/lib/chat-utils";
-import {
-  isFreeOrUnattributedUser,
-  type AppUser,
-} from "@/lib/app-entitlement";
+
+import { isLocalHistoryRestricted, type AppUser } from "@/lib/app-entitlement";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { useEnterpriseBuildStatus } from "@/lib/hooks/use-is-enterprise-build";
 import { useTauriEvent } from "@/lib/hooks/use-tauri-event";
@@ -181,9 +140,9 @@ const SYSTEM_ARTIFACT_APP =
 const DEFAULT_ACTIVITY_REVIEW_PRESET: AIPreset = {
   id: "activity-history",
   prompt: "",
-  provider: "screenpipe-cloud",
-  url: "",
-  model: "auto",
+  provider: "native-ollama",
+  url: "http://localhost:11434",
+  model: "llama3.2",
   defaultPreset: false,
   apiKey: null,
   maxContextChars: 200_000,
@@ -310,13 +269,13 @@ export function rangeForPreset(
 
 export function effectiveActivityRange(
   range: TimeRange | null,
-  user: AppUser | null | undefined,
+  _user: AppUser | null | undefined,
   now: Date,
-  isEnterpriseBuild = false,
+  _isEnterpriseBuild = false,
 ): TimeRange | null {
   return effectiveActivityRangeForAccess(
     range,
-    !isEnterpriseBuild && isFreeOrUnattributedUser(user),
+    isLocalHistoryRestricted(),
     now,
   );
 }
@@ -1446,10 +1405,7 @@ export function ActivityLedger({
     settings.activitiesEnabled === undefined && historyCoverage.length > 0;
   const activitiesEnabled =
     settings.activitiesEnabled ?? legacyActivitiesEnabled;
-  const activityUser = settings.user as AppUser | null | undefined;
-  const activityHistoryRestricted =
-    !enterpriseBuild.isEnterprise &&
-    isFreeOrUnattributedUser(activityUser);
+  const activityHistoryRestricted = isLocalHistoryRestricted();
   useEffect(() => {
     if (
       activityHistoryRestricted &&
@@ -1944,28 +1900,6 @@ export function ActivityLedger({
     invalidRange ||
     !recentActivityAvailable;
 
-  const makeSkill = (entry: ActivityHistoryEntry) => {
-    posthog.capture("activity_skill_clicked");
-    void showChatWithPrefill({
-      context: compactEntryContext(entry),
-      displayLabel: `Make a skill from “${entry.title}”`,
-      prompt: `Turn the workflow I performed during this exact interval into a reusable skill.
-
-Re-query Screenpipe only inside the cited time range and use the cited frames and audio moments as anchors. Reconstruct the actual sequence of repeatable actions from accessibility, parsed, interaction, and audio evidence. Separate the durable procedure from customer-specific, project-specific, or one-off content; remove secrets and private values. Draft a focused SKILL.md with clear triggers, inputs, steps, and verification for my review. Do not install it yet.`,
-      source: "activity-history-skill",
-    });
-  };
-
-  const askAboutActivity = (entry: ActivityHistoryEntry) => {
-    posthog.capture("activity_chat_clicked");
-    void showChatWithPrefill({
-      context: compactEntryContext(entry),
-      displayLabel: `Ask about “${entry.title}”`,
-      prompt: "Tell me more about this activity.",
-      source: "activity-history-chat",
-    });
-  };
-
   const openEvidence = useCallback(
     (evidence: ActivityArtifact) => {
       onOpenArtifact?.();
@@ -2290,24 +2224,6 @@ Re-query Screenpipe only inside the cited time range and use the cited frames an
                             artifactsLoading={!ledgerArtifactsReady}
                             openEvidence={openEvidence}
                           />
-                          <span aria-hidden="true">·</span>
-                          <button
-                            type="button"
-                            onClick={() => makeSkill(entry)}
-                            className="font-mono text-[10px] normal-case tracking-wider text-muted-foreground transition-colors hover:text-foreground"
-                            aria-label={ui("Make skill from {value1}", { value1: entry.title })}
-                          >
-                            Make skill
-                          </button>
-                          <span aria-hidden="true">·</span>
-                          <button
-                            type="button"
-                            onClick={() => askAboutActivity(entry)}
-                            className="font-mono text-[10px] normal-case tracking-wider text-muted-foreground transition-colors hover:text-foreground"
-                            aria-label={ui("Chat about {value1}", { value1: entry.title })}
-                          >
-                            Chat
-                          </button>
                         </div>
                       </div>
                     </article>

@@ -20,7 +20,6 @@ import {
 } from "@/components/thinking-level-selector";
 import { ComposerUtilityMenu } from "@/components/chat/standalone/composer-utility-menu";
 import { ComposerDictationControl } from "@/components/chat/standalone/composer-dictation-control";
-import { UsagePopover } from "@/components/usage/usage-popover";
 import { ComposerWorktreeToggle } from "@/components/chat/standalone/composer-worktree-toggle";
 import type {
   ComposerCodingWorkspaceProps,
@@ -213,11 +212,6 @@ export function ComposerControlsRow({
           hideModeControl
         />
       )}
-      <UsagePopover
-        activePreset={modelControls.activePreset}
-        sessionId={modelControls.currentQueueSessionId}
-      />
-      {dictation && <ComposerDictationControl {...dictation} />}
       <Button
         type={sendButton.isStopMode ? "button" : "submit"}
         size="icon"

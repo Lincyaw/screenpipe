@@ -41,6 +41,13 @@ impl std::fmt::Debug for StorageReadToken {
 }
 
 impl StorageReadToken {
+    /// Logical deletion/redaction revision captured by an export token. This
+    /// excludes ordinary append-only recording and is safe to compare in the
+    /// existing coordinated writer without holding the admission gate twice.
+    pub fn revocation(&self) -> Option<i64> {
+        self.revocation
+    }
+
     /// Check privacy independently: refreshing storage rows cannot authorize a
     /// payload selected under a superseded privacy policy.
     pub async fn validate_privacy(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {

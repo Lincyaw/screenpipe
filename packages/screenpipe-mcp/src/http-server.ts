@@ -18,6 +18,8 @@
  * must send `Authorization: Bearer <secret>` whenever --api-key is set.
  */
 
+import { AGENT_SESSION_TOOLS, readAgentSessionTool } from "./agent-session-tools";
+import { MEMORY_TOOLS, isMemoryTool, readMemoryTool } from "./memory-tools";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -36,6 +38,7 @@ import { PKG_VERSION } from "./version";
 import { BUNDLED_SKILLS_TOOL, readBundledSkills } from "./bundled-skills";
 import { normalizeTimeFields } from "./time-normalization";
 import { createMcpQualifiedValueReporter, resolveMcpClient, type McpClient } from "./qualified-value";
+import { resolveScreenpipeApiBase } from "./api-base";
 
 // ── CLI parsing ─────────────────────────────────────────────────────────
 
@@ -168,6 +171,8 @@ function constantTimeEq(a: string, b: string): boolean {
 // ── Tool definitions ────────────────────────────────────────────────────
 
 const TOOLS = [
+  ...MEMORY_TOOLS,
+  ...AGENT_SESSION_TOOLS,
   {
     name: "search_content",
     description:
@@ -216,12 +221,8 @@ const TOOLS = [
 // ── Tool handlers ───────────────────────────────────────────────────────
 
 function makeFetchAPI(screenpipePort: number, client: () => McpClient) {
-  // Honor SCREENPIPE_API_URL so the HTTP MCP can also front a remote screenpipe
-  // (set by `screenpipe agent setup --api-url`); falls back to the local port.
-  const base = (process.env.SCREENPIPE_API_URL || `http://localhost:${screenpipePort}`).replace(
-    /\/+$/,
-    "",
-  );
+  // Use the same local/remote upstream selection as the stdio helper.
+  const base = resolveScreenpipeApiBase({ host: "localhost", port: screenpipePort });
   const apiKey = process.env.SCREENPIPE_LOCAL_API_KEY || process.env.SCREENPIPE_API_KEY;
   return async (endpoint: string, options: RequestInit = {}): Promise<Response> =>
     fetch(`${base}${endpoint}`, {
@@ -325,7 +326,9 @@ function createMcpServer(screenpipePort: number): Server {
   s.setRequestHandler(CallToolRequestSchema, async (request) => observeCall(request.params.name, async () => {
     const { name, arguments: args } = request.params;
     if (name === BUNDLED_SKILLS_TOOL.name) return readBundledSkills(args);
+    if (isMemoryTool(name)) return readMemoryTool(name, args, fetchAPI);
     if (!args) throw Object.assign(new Error("Missing arguments"), { status: 400 });
+    if (name === "search-agent-sessions" || name === "read-agent-session") return readAgentSessionTool(name, args, fetchAPI);
     if (name === "search_content") return handleSearchContent(fetchAPI, args, qualifiedValue);
     throw Object.assign(new Error(`Unknown tool: ${name}`), { status: 400 });
   }));

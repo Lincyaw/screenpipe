@@ -1,0 +1,46 @@
+{
+  "repository": "https://github.com/google/fonts",
+  "commit": "e7db6ca603fd4862010383ff17ffd6cc4ffac1c0",
+  "fonts": [
+    {
+      "file": "Inter-variable.ttf",
+      "source": "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf",
+      "sha256": "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031",
+      "family": "Inter",
+      "postscript_name": "Inter-Regular",
+      "axes": [
+        {
+          "tag": "opsz",
+          "minimum": 14.0,
+          "default": 14.0,
+          "maximum": 32.0
+        },
+        {
+          "tag": "wght",
+          "minimum": 100.0,
+          "default": 400.0,
+          "maximum": 900.0
+        }
+      ]
+    },
+    {
+      "file": "SpaceGrotesk-variable.ttf",
+      "source": "https://raw.githubusercontent.com/google/fonts/e7db6ca603fd4862010383ff17ffd6cc4ffac1c0/ofl/spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf",
+      "sha256": "acad6de1fc93436f5c0f1f4137751ef04f1aea3063e7036535970ffcfbd79f72",
+      "family": "Space Grotesk Light",
+      "postscript_name": "SpaceGrotesk-Light",
+      "axes": [
+        {
+          "tag": "wght",
+          "minimum": 300.0,
+          "default": 300.0,
+          "maximum": 700.0
+        }
+      ]
+    }
+  ],
+  "licenses": [
+    "public/fonts/Inter-OFL.txt",
+    "public/fonts/SpaceGrotesk-OFL.txt"
+  ]
+}

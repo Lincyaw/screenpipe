@@ -265,10 +265,9 @@ export function AIProviderConfig({
   const [showApiKey, setShowApiKey] = useState(false);
   const { isManagedDeployment, policy: enterprisePolicy } = useManagedPolicy();
   const aiPresetPolicy = enterprisePolicy.aiPresetPolicy ?? DEFAULT_ENTERPRISE_AI_PRESET_POLICY;
-  const showScreenpipeCloud =
-    !isManagedDeployment || aiPresetPolicy.allow_screenpipe_cloud;
+  const showScreenpipeCloud = false;
   const { piModels, isLoading: loadingPiModels, upgradeEligible } = usePiModels();
-  const showUpsell = useModelUpsellGating(upgradeEligible);
+  const showUpsell = false;
 
   const [formData, setFormData] = useState<AIPreset>({
     provider: defaultPreset?.provider || "openai",
@@ -349,7 +348,7 @@ export function AIProviderConfig({
   // provider whose picker is no longer rendered.
   useEffect(() => {
     if (!acpEnabled && selectedProvider === "acp") {
-      setSelectedProvider("screenpipe-cloud");
+      setSelectedProvider("openai");
     }
   }, [acpEnabled, selectedProvider]);
 
@@ -1515,7 +1514,7 @@ export const AIPresetsSelector = ({
   const canManageEmployeePresets = !isManagedDeployment || aiPresetPolicy.allow_employee_custom_presets;
 
   const { piModels, upgradeEligible } = usePiModels();
-  const showUpsell = useModelUpsellGating(upgradeEligible);
+  const showUpsell = false;
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
       setOpen(nextOpen);
@@ -1899,27 +1898,6 @@ export const AIPresetsSelector = ({
   return (
     <>
       <div className={cn("flex flex-col w-full gap-2", containerClassName)}>
-        {!isControlled && selectedPresetRequiresLogin && !showModelOnly && (
-          <div className="flex items-center gap-2 p-2 text-sm bg-muted border border-border rounded-lg">
-            <AlertTriangle className="h-4 w-4 text-muted-foreground shrink-0" />
-            <span className="text-foreground flex-1">
-              Login required to use Screenpipe Cloud
-            </span>
-            {showLoginCta && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="shrink-0 h-7 text-xs border-border hover:bg-muted"
-                onClick={async () => {
-                  await commands.showWindow({ Home: { page: "account" } });
-                }}
-              >
-                <LogIn className="h-3 w-3 mr-1" />
-                Login
-              </Button>
-            )}
-          </div>
-        )}
         <div className="flex w-full items-center gap-2">
         <Popover open={open} onOpenChange={handleOpenChange}>
           <TooltipProvider>

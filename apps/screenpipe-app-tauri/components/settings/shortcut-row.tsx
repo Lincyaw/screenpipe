@@ -125,6 +125,7 @@ const ShortcutRow = ({
     searchShortcut: string;
     lockVaultShortcut?: string;
     starSessionShortcut?: string;
+    captureAnnotateShortcut?: string;
   }) => {
     console.log("syncing shortcuts:", {
       showShortcut: updatedShortcuts.showScreenpipeShortcut,
@@ -138,7 +139,7 @@ const ShortcutRow = ({
     // wait 1 second for settings to persist
     await new Promise((resolve) => setTimeout(resolve, 1000));
     // updateGlobalShortcuts re-reads all shortcuts from store including showChatShortcut
-    await commands.updateGlobalShortcuts(
+    const result = await commands.updateGlobalShortcuts(
       updatedShortcuts.showScreenpipeShortcut,
       updatedShortcuts.startRecordingShortcut,
       updatedShortcuts.stopRecordingShortcut,
@@ -147,6 +148,7 @@ const ShortcutRow = ({
     {}
     );
 
+    if (result.status === "error") throw new Error(result.error);
     return true;
   };
 
@@ -164,6 +166,7 @@ const ShortcutRow = ({
         searchShortcut: settings.searchShortcut,
         lockVaultShortcut: settings.lockVaultShortcut || "",
         starSessionShortcut: settings.starSessionShortcut || "",
+        captureAnnotateShortcut: settings.captureAnnotateShortcut || "",
       };
       const conflict = Object.entries(allShortcuts).find(
         ([key, value]) =>
@@ -206,6 +209,7 @@ const ShortcutRow = ({
             showChatShortcut: shortcut === "showChatShortcut" ? keys : settings.showChatShortcut,
             searchShortcut: shortcut === "searchShortcut" ? keys : settings.searchShortcut,
             starSessionShortcut: shortcut === "starSessionShortcut" ? keys : (settings.starSessionShortcut || ""),
+            captureAnnotateShortcut: shortcut === "captureAnnotateShortcut" ? keys : (settings.captureAnnotateShortcut || ""),
             lockVaultShortcut: shortcut === "lockVaultShortcut" ? keys : (settings.lockVaultShortcut || ""),
           };
           await syncShortcuts(updatedShortcuts);
@@ -235,7 +239,7 @@ const ShortcutRow = ({
       toast({
         title: ui("Error updating shortcut"),
         description:
-          ui("Failed to register shortcut. Please try a different combination."),
+          error instanceof Error ? error.message : ui("Failed to register shortcut. Please try a different combination."),
         variant: "destructive",
       });
     }

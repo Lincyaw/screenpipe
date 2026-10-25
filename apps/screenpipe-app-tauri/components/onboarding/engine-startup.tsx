@@ -516,12 +516,10 @@ export default function EngineStartup({ handleNextSlide }: EngineStartupProps) {
 
   const ensureDefaultPreset = useCallback(async () => {
     if (settings.aiPresets.length === 0) {
-      const isPro = settings.user?.cloud_subscribed === true;
-      await updateSettings({ aiPresets: makeDefaultPresets(isPro) as any });
+      await updateSettings({ aiPresets: makeDefaultPresets(false) as any });
     }
   }, [
     settings.aiPresets.length,
-    settings.user?.cloud_subscribed,
     updateSettings,
   ]);
 

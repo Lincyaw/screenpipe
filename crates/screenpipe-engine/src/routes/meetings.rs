@@ -420,7 +420,7 @@ pub struct MeetingSummaryStatusResponse {
     pub error_message: Option<String>,
 }
 
-/// Is the summary Pipe installed, enabled, and still wired to `meeting_ended`?
+/// Is the summary Pipe installed, enabled, and backed by a running scheduler?
 ///
 /// Without a Pipe manager the engine cannot run Pipes at all, so automatic
 /// summaries are genuinely off rather than merely unknown.
@@ -429,6 +429,10 @@ async fn auto_summary_enabled(state: &AppState, pipe: &str) -> bool {
         return false;
     };
     let manager = manager.lock().await;
+    if !manager.scheduler_is_running() {
+        return false;
+    }
+
     // Pick up deletions and edits made on disk since the last read; this is
     // the invalidation the old one-shot client fetch never had.
     if let Err(e) = manager.reload_pipes().await {

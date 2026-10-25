@@ -32,8 +32,7 @@ export type SettingsSection =
 
 export const ALL_SETTINGS_SECTIONS: SettingsSection[] = [
   "display", "general", "ai", "ai-settings", "activities", "recording", "audio", "shortcuts", "notifications",
-  "usage", "privacy", "permissions", "storage", "speakers",
-  "team", "account", "referral",
+  "privacy", "permissions", "storage", "speakers",
 ];
 
 /** Retired section ids that still arrive from old deep links and notifications. */
@@ -41,6 +40,10 @@ const LEGACY_SECTION_ALIASES: Record<string, SettingsSection> = {
   "disk-usage": "storage",
   "cloud-archive": "storage",
   "cloud-sync": "storage",
+  "account": "recording",
+  "team": "recording",
+  "referral": "recording",
+  "usage": "ai",
 };
 
 /**

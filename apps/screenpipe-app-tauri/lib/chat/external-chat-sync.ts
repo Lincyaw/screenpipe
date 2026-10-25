@@ -23,6 +23,7 @@ import { commands } from "@/lib/utils/tauri";
 const LIVE_WATCH_DEBOUNCE_MS = 120;
 const FULL_RECONCILIATION_INTERVAL_MS = 60_000;
 const E2E_EXTERNAL_CHAT_HOME_ENV = "SCREENPIPE_E2E_EXTERNAL_CHAT_HOME";
+const AI_TOOLS_HOME_ENV = "SCREENPIPE_AI_TOOLS_HOME";
 
 interface WatchTarget {
   source: ExternalChatSource;
@@ -78,6 +79,15 @@ async function resolveExternalChatHome(explicitHome?: string): Promise<string | 
   if (process.env.NEXT_PUBLIC_SCREENPIPE_E2E === "true") {
     const isolatedHome = await commands.getEnv(E2E_EXTERNAL_CHAT_HOME_ENV).catch(() => "");
     return isolatedHome.trim() || null;
+  }
+  // Ordinary debug builds already isolate agent configuration through this
+  // runtime override. Keep transcript discovery inside the same boundary.
+  try {
+    const isolatedHome = await commands.getEnv(AI_TOOLS_HOME_ENV);
+    if (isolatedHome.trim()) return isolatedHome.trim();
+  } catch {
+    // A failed isolation lookup must never fall through to personal history.
+    return null;
   }
   return homeDir();
 }

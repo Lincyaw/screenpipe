@@ -469,7 +469,6 @@ struct TimelineControlBar: View {
             dailySummaryAction
             if model.hasAudioNearby { playbackGroup }
             searchAction
-            if !embedded { chatAction }
         }
         .padding(.horizontal, 16)
     }
@@ -588,18 +587,6 @@ struct TimelineControlBar: View {
         .buttonStyle(TimelineControlStyle())
         .accessibilityLabel(uiText("search"))
         .help(uiText("Search timeline (/)"))
-    }
-
-    private var chatAction: some View {
-        Button { model.emitAction("open_chat") } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "bubble.left")
-                Text(uiText("chat"))
-            }
-        }
-        .buttonStyle(TimelineControlStyle())
-        .accessibilityLabel(uiText("chat"))
-        .help(uiText("Open chat"))
     }
 }
 
@@ -1312,18 +1299,6 @@ struct TimelineTagToolbar: View {
                     .buttonStyle(TimelineControlStyle())
                 }
                 HStack(spacing: 6) {
-                    Button {
-                        if let action = model.askAISelectionAction() {
-                            model.emitAction(action)
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "sparkles")
-                            Text(uiText("ask ai"))
-                        }
-                    }
-                    .buttonStyle(TimelineControlStyle())
-
                     Button {
                         if let action = model.exportVideoSelectionAction() {
                             model.emitAction(action)

@@ -63,10 +63,11 @@ describe("ShortcutGuide", () => {
     expect(
       await screen.findByRole("dialog", { name: "Keyboard shortcuts" }),
     ).toBeVisible();
-    expect(screen.getByText("Next chat tab")).toBeInTheDocument();
+    expect(screen.queryByText("Next chat tab")).toBeNull();
+    expect(screen.queryByText("Toggle AI chat")).toBeNull();
     expect(screen.getByText("Close tab")).toBeInTheDocument();
     expect(screen.getByText("⌘W")).toBeInTheDocument();
-    expect(screen.getByText("⌃Tab")).toBeInTheDocument();
+    expect(screen.queryByText("⌃Tab")).toBeNull();
     expect(screen.getByText("⌘⌃K")).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "/", code: "Slash", metaKey: true });

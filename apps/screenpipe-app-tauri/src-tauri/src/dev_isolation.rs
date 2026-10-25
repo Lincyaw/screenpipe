@@ -103,6 +103,10 @@ fn apply_inner() -> bool {
         return false;
     }
 
+    // Source-built clients must use their matching local MCP even when the
+    // developer deliberately uses the production data profile below.
+    apply_local_mcp();
+
     if is_truthy(OPT_OUT_ENV) {
         eprintln!(
             "screenpipe[dev]: {OPT_OUT_ENV} set — using the PRODUCTION profile \
@@ -146,6 +150,46 @@ fn apply_inner() -> bool {
     );
 
     true
+}
+
+#[cfg(debug_assertions)]
+fn apply_local_mcp() {
+    const ENTRYPOINT: &str = "SCREENPIPE_MCP_ENTRYPOINT";
+    const BUN: &str = "SCREENPIPE_MCP_BUN";
+    if std::env::var_os(ENTRYPOINT).is_none_or(|value| value.is_empty()) {
+        // Locate only this checkout's package using the compile-time source
+        // location. No runtime CWD search, package download or foreign script.
+        if let Some(root) = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find(|root| root.join("packages/screenpipe-mcp/package.json").is_file())
+        {
+            let entrypoint = root.join("packages/screenpipe-mcp/dist/cli.js");
+            if entrypoint.is_absolute() && entrypoint.is_file() {
+                set_if_unset(ENTRYPOINT, &entrypoint.to_string_lossy());
+            }
+        }
+    }
+    if std::env::var_os(ENTRYPOINT).is_some_and(|value| !value.is_empty()) {
+        if let Some(home) = dirs::home_dir() {
+            for candidate in [home.join(".local/bin/bun"), home.join(".bun/bin/bun")] {
+                if !candidate.is_file() {
+                    continue;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if !candidate
+                        .metadata()
+                        .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+                    {
+                        continue;
+                    }
+                }
+                set_if_unset(BUN, &candidate.to_string_lossy());
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(debug_assertions)]

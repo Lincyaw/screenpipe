@@ -10,11 +10,13 @@
 
 ## What screenpipe is
 
-Context infrastructure for AI agents. The ambient layer between humans and their digital work.
+Local context infrastructure for external AI agents.
 
-Screen is the universal interface — 10M bits/second, the highest-fidelity signal of human intent. During work, the screen contains all the millions of software that ate the world and are being eaten by AI right now. Screenpipe captures that context locally and makes it available to AI.
+Screenpipe collects screen activity, conversations and local agent session records. It stores and indexes context locally, with basic transformations such as transcription and activity summaries.
 
-Not a memory tool. Not an assistant you prompt. An ambient automation layer that works in the background with zero prompting.
+The desktop interface lets people inspect captured data, review transformations, follow source evidence and manage capture, storage and privacy. MCP gives external agents access to the same context.
+
+External agents such as Codex own conversation, analysis, workflow discovery and task execution. Agent sessions are read-only source records in Screenpipe.
 
 ## Why we exist
 
@@ -22,16 +24,18 @@ Every AI interaction today requires stopping work, translating intent into a pro
 
 We build the layer that gives AI full context of human work so it can act autonomously. Recording + AI = ability to clone human digital work at high fidelity.
 
-## Where this goes
+## Product boundary
 
-1. **Now: Memory.** Make desktop memory work so well people can't live without it. Record, Rewind, Ask — three verbs, nothing else.
-2. **Next: Context layer for AI agents.** Open API so any AI agent can query your screen history. Every AI agent needs to know what the user is doing, act on that context, and trigger without prompts.
-3. **Later: Everything.** We are going to record everything you do, 24/7, safely, encrypted locally and connected to AI.
+- **Collect:** reliable recording and supported source ingestion.
+- **Inspect:** human-readable source records, playback and basic conversions.
+- **Retrieve:** authenticated MCP access with source identity and explicit coverage limits.
+
+The desktop does not import external sessions into a chat composer or run workflow-discovery schedules. Saved records remain available as context. External-service connectors remain useful as data sources; an API proxy alone does not imply that service data is stored in the local index.
 
 ## Product principles
 
 - **Stability over features.** Users who stay are obsessed. Users who leave hit bugs. Fix what's broken before building what's new.
-- **No feature creep.** Every feature must serve Record, Rewind, or Ask. If it doesn't, it doesn't ship.
+- **No feature creep.** Every feature must improve collection, inspection, basic conversion or agent retrieval. Conversation and task execution belong in the external agent.
 - **Respect the user's machine.** CPU, memory, disk — screenpipe runs 24/7 in the background. Performance is not optional. Target: <20% CPU, <3GB RAM on release builds.
 
 ## Engineering principles
@@ -60,7 +64,7 @@ We build the layer that gives AI full context of human work so it can act autono
 
 ## What we believe
 
-- Sending prompts is obsolete, AI should just watch and work.
+- Agents should retrieve existing context instead of asking people to reconstruct it.
 - Humans spend 8+ hours/day on screens. Digital work is bottlenecked by human attention. AI needs full context to truly automate.
 - Vision is the universal interface — it's the most powerful sense of most animals.
 - We believe humans should be augmented by AI, and buy ourselves time to expand our consciousness and explore the universe.

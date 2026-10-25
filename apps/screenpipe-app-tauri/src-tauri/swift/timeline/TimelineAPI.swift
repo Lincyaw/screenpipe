@@ -502,8 +502,10 @@ struct TimelineRESTClient {
 
     /// `GET /frames/{id}` — full-size JPEG bytes.
     func frameImage(id: String) async throws -> Data {
-        let url = config.httpBase.appendingPathComponent("frames").appendingPathComponent(id)
-        return try await perform(authorized(url))
+        let base = config.httpBase.appendingPathComponent("frames").appendingPathComponent(id)
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "fallback", value: "false")]
+        return try await perform(authorized(components.url!))
     }
 
     /// `GET /frames/{id}/thumbnail?width=&quality=`

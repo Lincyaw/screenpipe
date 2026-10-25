@@ -35,6 +35,7 @@ fn history_request(method: &Method, path: &str) -> bool {
     matches!(
         path,
         "/search"
+            | "/agent-sessions"
             | "/starred-sessions"
             | "/search/keyword"
             | "/semantic/actors/search"
@@ -42,6 +43,11 @@ fn history_request(method: &Method, path: &str) -> bool {
             | "/elements"
             | "/activity-summary"
             | "/activity-ledger"
+            | "/memory/tree"
+            | "/memory/search"
+            | "/memory/index/status"
+            | "/memory/summary/status"
+            | "/memory/summary/config"
             | "/artifacts"
             | "/tags/autocomplete"
             | "/openapi.json"
@@ -53,7 +59,7 @@ fn history_request(method: &Method, path: &str) -> bool {
             | "/vision/metrics"
             | "/audio/metrics"
             | "/capture/hd"
-    ) || ["/frames", "/speakers", "/meetings", "/memories"]
+    ) || ["/frames", "/speakers", "/meetings", "/memories", "/memory/marks", "/memory/nodes", "/memory/summary/jobs", "/capture/marked"]
         .iter()
         .any(|prefix| {
             path == *prefix
@@ -158,6 +164,12 @@ mod tests {
             (Method::GET, "/search?q=saved", true),
             (Method::GET, "/frames/42/thumbnail", true),
             (Method::GET, "/meetings/1/transcript", true),
+            (Method::GET, "/memory/marks", true),
+            (Method::GET, "/memory/marks/mark-id/image", true),
+            (Method::GET, "/memory/marks-unrelated", false),
+            (Method::POST, "/memory/marks", false),
+            (Method::PATCH, "/memory/marks/mark-id", false),
+            (Method::DELETE, "/memory/marks/mark-id", false),
             (Method::POST, "/raw_sql", true),
             (Method::POST, "/audio/start", false),
             (Method::POST, "/vision/device/start", false),

@@ -212,6 +212,7 @@ export default function PermissionsStep({
   // Filter permissions for this platform
   const activePermissions = permissions.filter((p) =>
     (!p.macOnly || isMac) && (p.id !== "mic" || microphoneRequired)
+      && ((p.id !== "screen" && p.id !== "accessibility") || !settings.disableVision)
   );
   const activePermissionsRef = useRef(activePermissions);
   activePermissionsRef.current = activePermissions;
@@ -412,10 +413,10 @@ export default function PermissionsStep({
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img className="w-12 h-12 mb-2" src="/128x128.png" alt={ui("Screenpipe")} />
         <h1 className="font-mono text-base font-bold text-foreground">
-          Unlock the full experience
+          Recording permissions
         </h1>
         <p className="font-mono text-[10px] text-muted-foreground mt-1 text-center max-w-xs">
-          Three permissions turn on recording.
+          Grant access for the recording sources you selected.
         </p>
       </div>
 
