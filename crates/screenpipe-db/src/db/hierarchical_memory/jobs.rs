@@ -22,6 +22,66 @@ fn nonempty(value: Option<String>) -> Option<String> {
 }
 
 impl DatabaseManager {
+    /// Poll durable IDs infrequently; capture has no index observer. Only ID
+    /// and time metadata bypasses release views, then existing ledger gates
+    /// process the accepted ranges through the ordinary protected pipeline.
+    pub async fn maintain_memory_projection(&self, offset: i32) -> Result<(), ExplicitMemoryError> {
+        let reader = self.release_owner.as_deref().unwrap_or(self);
+        let mut conn = reader.acquire_read().await?;
+        let mut waters = Vec::new();
+        let mut windows = Set::new();
+        let recent = Utc::now() - chrono::Duration::hours(1);
+        for (kind, table) in [
+            ("frame", "frames"),
+            ("ui_event", "ui_events"),
+            ("audio", "audio_transcriptions"),
+        ] {
+            let last: i64 =
+                sqlx::query_scalar("SELECT source_id FROM memory_ingest_watermarks WHERE kind=?")
+                    .bind(kind)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            let sql = format!("SELECT id,timestamp FROM {table} WHERE id>? ORDER BY id LIMIT 1024");
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(last)
+                .fetch_all(&mut *conn)
+                .await?;
+            let mut next = last;
+            for row in rows {
+                let at: DateTime<Utc> = row.try_get("timestamp")?;
+                if at < recent {
+                    let minute = at.timestamp().div_euclid(60) * 60;
+                    if windows.len() >= 32 && !windows.contains(&minute) {
+                        break;
+                    }
+                    windows.insert(minute);
+                }
+                next = row.try_get("id")?;
+            }
+            waters.push((kind, next));
+        }
+        drop(conn);
+        for minute in windows {
+            let start = DateTime::from_timestamp(minute, 0)
+                .ok_or_else(|| invalid("invalid_memory_timestamp"))?;
+            self.schedule_memory_index(start, start + chrono::Duration::minutes(1), offset, 20)
+                .await?;
+        }
+        let mut tx = self.begin_immediate_with_retry().await?;
+        for (kind, id) in waters {
+            sqlx::query(
+                "UPDATE memory_ingest_watermarks SET source_id=max(source_id,?) WHERE kind=?",
+            )
+            .bind(id)
+            .bind(kind)
+            .execute(&mut **tx.conn())
+            .await?;
+        }
+        sqlx::query("UPDATE memory_nodes SET provisional=0,revision=revision+1,fingerprint=fingerprint||':closed' WHERE id IN (SELECT id FROM memory_nodes WHERE provisional=1 AND superseded=0 AND invalidated=0 AND julianday(end_time)<julianday('now','-5 minutes') ORDER BY end_time DESC LIMIT 128)").execute(&mut **tx.conn()).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Bounded requests, split into local calendar days. Completed jobs remain
     /// durable and repeated submissions are idempotent for the same window.
     pub async fn schedule_memory_index(
@@ -64,8 +124,12 @@ impl DatabaseManager {
             );
             sqlx::query("INSERT INTO memory_index_jobs(id,start_time,end_time,cursor,timezone_offset_minutes,state,priority,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?,?) ON CONFLICT(id) DO NOTHING")
                 .bind(&id).bind(iso(cursor)).bind(iso(stop)).bind(iso(cursor)).bind(offset).bind(priority).bind(&now).bind(&now).execute(&mut **tx.conn()).await?;
-            if priority >= 100 {
-                sqlx::query("UPDATE memory_index_jobs SET state='pending',cursor=start_time,attempts=0,next_attempt_at=0,last_error=NULL,priority=?,updated_at=? WHERE id=? AND state IN ('ready','failed')")
+            if priority >= 20 {
+                sqlx::query("DELETE FROM memory_projection_jobs WHERE parent_job_id=?")
+                    .bind(&id)
+                    .execute(&mut **tx.conn())
+                    .await?;
+                sqlx::query("UPDATE memory_index_jobs SET state='pending',cursor=start_time,attempts=0,next_attempt_at=0,last_error=NULL,priority=?,updated_at=? WHERE id=?")
                     .bind(priority).bind(&now).bind(&id).execute(&mut **tx.conn()).await?;
             }
             ids.push(id);
@@ -95,6 +159,11 @@ impl DatabaseManager {
             .bind(offset)
             .execute(&mut **tx.conn())
             .await?;
+        let current = epoch(&mut **tx.conn()).await?;
+        sqlx::query("UPDATE memory_index_jobs SET state='pending',cursor=start_time,attempts=0,next_attempt_at=0,last_error=NULL WHERE id IN (SELECT parent_job_id FROM memory_projection_jobs WHERE privacy_epoch IS NOT ?)")
+            .bind(current).execute(&mut **tx.conn()).await?;
+        sqlx::query("DELETE FROM memory_projection_jobs WHERE privacy_epoch IS NOT ? OR parent_job_id NOT IN (SELECT id FROM memory_index_jobs) OR id IN (SELECT id FROM memory_projection_jobs WHERE state='ready' ORDER BY updated_at DESC LIMIT -1 OFFSET 4096)")
+            .bind(current).execute(&mut **tx.conn()).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -136,6 +205,15 @@ impl DatabaseManager {
         let attempts: i64 = row.try_get("attempts")?;
         let now = Utc::now();
         if let Some(error) = error {
+            if matches!(
+                error,
+                "memory_index_writer_budget" | "privacy_pending" | "index_revision_changed"
+            ) {
+                sqlx::query("UPDATE memory_index_jobs SET state='pending',next_attempt_at=?,last_error=?,updated_at=? WHERE id=?")
+                    .bind(now.timestamp()+5).bind(error).bind(iso(now)).bind(id).execute(&mut **tx.conn()).await?;
+                tx.commit().await?;
+                return Ok(());
+            }
             let attempts = attempts + 1;
             sqlx::query("UPDATE memory_index_jobs SET state=?,attempts=?,next_attempt_at=?,last_error=?,updated_at=? WHERE id=?")
                 .bind(if attempts>=5 {"failed"} else {"pending"}).bind(attempts).bind(now.timestamp()+(5_i64*2_i64.pow(attempts.min(8) as u32)).min(900))
@@ -162,21 +240,27 @@ impl DatabaseManager {
             .fetch_one(&mut *tx)
             .await?;
         let (pending,failed): (i64,i64) = sqlx::query_as("SELECT COALESCE(SUM(state IN ('pending','running')),0),COALESCE(SUM(state='failed'),0) FROM memory_index_jobs").fetch_one(&mut *tx).await?;
-        let (count,provisional): (i64,i64) = sqlx::query_as("SELECT count(*),COALESCE(sum(provisional),0) FROM memory_nodes WHERE invalidated=0 AND privacy_epoch IS ?")
+        let (count,provisional): (i64,i64) = sqlx::query_as("SELECT count(*),COALESCE(sum(provisional),0) FROM memory_nodes WHERE superseded=0 AND invalidated=0 AND privacy_epoch IS ?")
             .bind(current).fetch_one(&mut *tx).await?;
         // Calendar partition upper bounds are often tomorrow. Coverage reports
         // actual indexed source/mark times; it does not assert a gap-free scan.
-        let (first,last):(Option<String>,Option<String>)=sqlx::query_as("SELECT strftime('%Y-%m-%dT%H:%M:%fZ',min(julianday(moment))),strftime('%Y-%m-%dT%H:%M:%fZ',max(julianday(moment))) FROM (SELECT e.occurred_at AS moment FROM memory_evidence e JOIN memory_nodes n ON n.id=e.node_id WHERE n.invalidated=0 AND n.privacy_epoch IS ?1 UNION ALL SELECT m.source_timestamp AS moment FROM memory_node_marks nm JOIN memory_nodes n ON n.id=nm.node_id JOIN explicit_memory_marks m ON m.id=nm.mark_id WHERE n.invalidated=0 AND n.privacy_epoch IS ?1 AND m.privacy_epoch IS ?1)")
+        let (first,last):(Option<String>,Option<String>)=sqlx::query_as("SELECT strftime('%Y-%m-%dT%H:%M:%fZ',min(julianday(moment))),strftime('%Y-%m-%dT%H:%M:%fZ',max(julianday(moment))) FROM (SELECT e.occurred_at AS moment FROM memory_evidence e JOIN memory_nodes n ON n.id=e.node_id WHERE n.superseded=0 AND n.invalidated=0 AND n.privacy_epoch IS ?1 AND e.privacy_epoch IS ?1 UNION ALL SELECT m.source_timestamp AS moment FROM memory_node_marks nm JOIN memory_nodes n ON n.id=nm.node_id JOIN explicit_memory_marks m ON m.id=nm.mark_id WHERE n.superseded=0 AND n.invalidated=0 AND n.privacy_epoch IS ?1 AND m.privacy_epoch IS ?1)")
             .bind(current).fetch_one(&mut *tx).await?;
-        let rebuild_pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM memory_nodes WHERE invalidated!=0 OR privacy_epoch IS NOT ?)").bind(current).fetch_one(&mut *tx).await?;
+        let rebuild_pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM memory_nodes WHERE superseded=0 AND (invalidated!=0 OR privacy_epoch IS NOT ?))").bind(current).fetch_one(&mut *tx).await?;
         let privacy_pending: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM memory_nodes WHERE privacy_epoch IS NOT ?)",
+            "SELECT EXISTS(SELECT 1 FROM memory_nodes WHERE superseded=0 AND privacy_epoch IS NOT ?)",
         )
         .bind(current)
         .fetch_one(&mut *tx)
         .await?;
         let running = sqlx::query("SELECT * FROM memory_index_jobs WHERE state='running' ORDER BY updated_at DESC LIMIT 1").fetch_optional(&mut *tx).await?.as_ref().map(job).transpose()?;
         let error: Option<String> = sqlx::query_scalar("SELECT last_error FROM memory_index_jobs WHERE last_error IS NOT NULL AND (state='failed' OR updated_at>COALESCE((SELECT last_success_at FROM memory_index_state WHERE id=1),'')) ORDER BY updated_at DESC LIMIT 1").fetch_optional(&mut *tx).await?.flatten();
+        let projection_pending_jobs: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM memory_projection_jobs WHERE state='pending'")
+                .fetch_one(&mut *tx)
+                .await?;
+        let projection_cursor=sqlx::query("SELECT cursor_time,cursor_type,cursor_id,phase,processed_sources FROM memory_projection_jobs WHERE state='pending' ORDER BY updated_at DESC LIMIT 1")
+            .fetch_optional(&mut *tx).await?.map(|row|Ok::<_,sqlx::Error>(MemoryProjectionCursor{timestamp:row.try_get("cursor_time")?,source_type:row.try_get("cursor_type")?,source_id:row.try_get("cursor_id")?,phase:row.try_get("phase")?,processed_sources:row.try_get("processed_sources")?})).transpose()?;
         let result = MemoryIndexStatus {
             generation: row.try_get("generation")?,
             state: if running.is_some() {
@@ -202,6 +286,8 @@ impl DatabaseManager {
             rebuild_pending,
             timezone_offset_minutes: row.try_get("timezone_offset_minutes")?,
             current_job: running,
+            projection_pending_jobs,
+            projection_cursor,
         };
         tx.commit().await?;
         Ok(result)

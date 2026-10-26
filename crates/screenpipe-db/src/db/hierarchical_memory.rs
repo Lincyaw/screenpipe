@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap as Map, BTreeSet as Set};
 
+mod incremental;
 mod jobs;
 mod projection;
 mod query;
 
-pub(crate) const MAX_DAY_EVIDENCE: usize = 12_000;
-pub(crate) const MAX_DAY_NODES: usize = 1_000;
+pub(super) const MAX_PROJECTION_NODES: usize = 1_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MemoryNode {
@@ -32,6 +32,16 @@ pub struct MemoryNode {
     pub apps: Vec<String>,
     pub revision: i64,
     pub fingerprint: String,
+    #[serde(default = "task_view")]
+    pub view: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_label: Option<String>,
     #[serde(default)]
     pub children: Vec<MemoryNode>,
 }
@@ -66,6 +76,7 @@ pub struct MemoryNodeDetail {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MemoryTreeQuery {
+    pub view: Option<String>,
     pub parent_id: Option<String>,
     #[serde(alias = "level")]
     pub kind: Option<String>,
@@ -110,6 +121,21 @@ pub struct MemoryIndexStatus {
     pub rebuild_pending: bool,
     pub timezone_offset_minutes: i32,
     pub current_job: Option<MemoryIndexJob>,
+    pub projection_pending_jobs: i64,
+    pub projection_cursor: Option<MemoryProjectionCursor>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MemoryProjectionCursor {
+    pub timestamp: String,
+    pub source_type: String,
+    pub source_id: i64,
+    pub phase: String,
+    pub processed_sources: i64,
+}
+
+fn task_view() -> String {
+    "task".into()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -170,10 +196,22 @@ pub(super) async fn epoch(conn: &mut sqlx::SqliteConnection) -> Result<Option<i6
 }
 
 pub(super) fn row_node(row: &sqlx::sqlite::SqliteRow) -> Result<MemoryNode, sqlx::Error> {
+    let view: String = row.try_get("view")?;
+    let physical: String = row.try_get("kind")?;
+    let kind = if view == "app" {
+        match physical.as_str() {
+            "session" => "app",
+            "task" => "location",
+            _ => &physical,
+        }
+        .to_string()
+    } else {
+        physical
+    };
     Ok(MemoryNode {
         id: row.try_get("id")?,
         parent_id: row.try_get("parent_id")?,
-        kind: row.try_get("kind")?,
+        kind,
         label: row.try_get("label")?,
         label_origin: row.try_get("label_origin")?,
         start_time: row.try_get("start_time")?,
@@ -184,6 +222,11 @@ pub(super) fn row_node(row: &sqlx::sqlite::SqliteRow) -> Result<MemoryNode, sqlx
         apps: serde_json::from_str(&row.try_get::<String, _>("apps_json")?).unwrap_or_default(),
         revision: row.try_get("revision")?,
         fingerprint: row.try_get("fingerprint")?,
+        view,
+        app_name: row.try_get("app_name")?,
+        location_type: row.try_get("location_type")?,
+        location_key: row.try_get("location_key")?,
+        location_label: row.try_get("location_label")?,
         children: Vec::new(),
     })
 }

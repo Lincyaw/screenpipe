@@ -12,8 +12,13 @@ export type HierarchySummary = {
   user_notes_attributed: boolean;
   coverage?: { evidence_used: number; evidence_total: number; marks_used: number; marks_total: number; children_used: number; children_total: number; truncated: boolean };
 };
+export type MemoryView = "task" | "app";
 export type MemoryNode = {
-  id: string; parent_id: string | null; kind: "day" | "session" | "task";
+  id: string; parent_id: string | null; kind: "day" | "session" | "task" | "app" | "location";
+  view?: MemoryView;
+  app_name?: string | null;
+  location_type?: "url" | "file" | "window" | "unknown" | null;
+  location_key?: string | null; location_label?: string | null;
   label: string; label_origin: string; start_time: string; end_time: string;
   provisional: boolean; evidence_count: number; mark_count: number; apps: string[];
   revision: number; fingerprint: string; children?: MemoryNode[]; summary?: HierarchySummary | null;
@@ -49,6 +54,12 @@ export type SummaryJob = {
 export type SummaryStatus = {
   enabled: boolean; configured: boolean; provider: string; availability: string;
   pending_jobs: number; running_jobs: number; failed_jobs: number; last_error_code?: string | null;
+};
+export type MemoryExportManifest = {
+  export_id: string; revision: string; created_at: string; date: string; view: MemoryView;
+  directory: string;
+  files: { format: "json" | "markdown"; name: string; bytes: number }[];
+  coverage: { nodes_exported: number; truncated: boolean; nodes_truncated?: boolean; source_refs_truncated?: boolean; [key: string]: unknown };
 };
 
 export class HierarchyApiError extends Error {
@@ -110,6 +121,7 @@ export const hierarchicalMemoryApi = {
   index(signal?: AbortSignal) { return request<MemoryIndexStatus>("/memory/index/status", "GET", undefined, signal); },
   search(params: URLSearchParams, signal?: AbortSignal) { return request<{ data: MemorySearchHit[]; index: MemoryIndexStatus }>(`/memory/search?${params}`, "GET", undefined, signal); },
   rebuild(start_time: string, end_time: string) { return request<{ jobs: unknown[]; index: MemoryIndexStatus }>("/memory/index/rebuild", "POST", { start_time, end_time, timezone_offset_minutes: -new Date().getTimezoneOffset() }); },
+  exportDay(date: string, view: MemoryView) { return request<MemoryExportManifest>("/memory/exports", "POST", { date, view, timezone_offset_minutes: -new Date().getTimezoneOffset() }); },
   rename(node: MemoryNode, label: string) { return request<{ node: MemoryNode; index: MemoryIndexStatus }>(nodePath(node.id), "PATCH", { revision: node.revision, label }); },
   merge(node: MemoryNode, other: string, label: string) { return request<{ node: MemoryNode; index: MemoryIndexStatus }>(`${nodePath(node.id)}/merge`, "POST", { revision: node.revision, node_ids: [other], ...(label.trim() ? { label } : {}) }); },
   split(node: MemoryNode, at: string, label: string) { return request<{ node: MemoryNode; index: MemoryIndexStatus }>(`${nodePath(node.id)}/split`, "POST", { revision: node.revision, at, ...(label.trim() ? { label } : {}) }); },

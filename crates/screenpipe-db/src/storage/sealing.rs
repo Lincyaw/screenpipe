@@ -69,6 +69,7 @@ impl DatabaseManager {
         {
             return Err(storage_error("invalid privacy policy"));
         }
+        let _exports = self.memory_export_gate().await?;
         let current: (String, i64) =
             sqlx::query_as("SELECT policy,required_surfaces FROM storage_metadata")
                 .fetch_one(&self.pool)
@@ -79,6 +80,7 @@ impl DatabaseManager {
                 .store(true, std::sync::atomic::Ordering::Release);
             return Ok(());
         }
+        self.clear_memory_exports_locked().await?;
         let mut tx = self.begin_immediate_with_retry().await?;
         sqlx::query("UPDATE storage_metadata SET policy=?,required_surfaces=?,revision=revision+1")
             .bind(&policy.identity)
@@ -147,6 +149,7 @@ impl DatabaseManager {
         let Some(storage) = &self.storage else {
             return Err(storage_error("replacement requires hybrid storage"));
         };
+        let _exports = self.memory_export_source_guard("frame", payload.id).await?;
         let mut tx = self.begin_immediate_with_retry().await?;
         if let Some((job, _)) = release {
             let current:(String,i64,bool)=sqlx::query_as("SELECT identity,COALESCE((SELECT revision FROM _privacy_release WHERE kind=? AND id=? AND policy IS NULL),-1),text_required FROM _privacy_policy WHERE id=1").bind(&job.kind).bind(&job.id).fetch_one(&mut **tx.conn()).await?;

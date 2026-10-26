@@ -275,6 +275,7 @@ impl DatabaseManager {
     /// Delete an audio chunk and its transcriptions (cascade via FK).
     /// Used by batch reconciliation to merge multiple 30s chunks into one.
     pub async fn delete_audio_chunk(&self, chunk_id: i64) -> Result<(), sqlx::Error> {
+        let _exports = self.revoke_memory_exports().await?;
         let mut tx = self.begin_immediate_with_retry().await?;
         sqlx::query("DELETE FROM audio_transcriptions WHERE audio_chunk_id = ?1")
             .bind(chunk_id)
@@ -309,6 +310,7 @@ impl DatabaseManager {
         if chunk_ids.is_empty() {
             return Ok(());
         }
+        let _exports = self.revoke_memory_exports().await?;
         // Guard against SQLite's default SQLITE_MAX_VARIABLE_NUMBER (32766 on
         // modern builds, 999 on very old ones). 500 leaves a big safety
         // margin and keeps each statement's `?, ?, ?, ...` under a KB.
@@ -591,6 +593,7 @@ impl DatabaseManager {
             return Ok(0);
         }
         let text_length = trimmed.len() as i64;
+        let _exports = self.memory_export_audio_guard(audio_chunk_id).await?;
         let mut tx = self.begin_immediate_with_retry().await?;
 
         // Insert the full transcription
@@ -742,6 +745,7 @@ impl DatabaseManager {
                     .await;
                 }
 
+                let _exports = self.memory_export_audio_guard(audio_chunk_id).await?;
                 let mut tx = self.begin_immediate_with_retry().await?;
 
                 sqlx::query("DELETE FROM audio_transcriptions WHERE audio_chunk_id = ?1")

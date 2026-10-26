@@ -3,8 +3,8 @@
 
 use super::*;
 
-const DESCENDANTS: &str = "WITH RECURSIVE descendants(id,depth) AS (SELECT id,0 FROM memory_nodes WHERE id=?1 UNION ALL SELECT n.id,d.depth+1 FROM memory_nodes n JOIN descendants d ON n.parent_id=d.id WHERE d.depth<2)";
-const NODE_DIRECT_MATCH:&str="?7='' OR instr(lower(n.label),lower(?7))>0 OR n.id IN (SELECT node_id FROM memory_nodes_fts WHERE memory_nodes_fts MATCH ?8) OR (n.kind='day' AND EXISTS(SELECT 1 FROM memory_nodes child WHERE child.day_key=n.day_key AND child.invalidated=0 AND child.privacy_epoch IS ?1 AND instr(lower(child.label),lower(?7))>0))";
+pub(super) const DESCENDANTS: &str = "WITH RECURSIVE descendants(id,depth,lower_bound,upper_bound) AS (SELECT id,0,'0001-01-01T00:00:00Z','9999-12-31T23:59:59Z' FROM memory_nodes WHERE id=?1 UNION ALL SELECT n.id,d.depth+1,d.lower_bound,d.upper_bound FROM memory_nodes n JOIN descendants d ON n.parent_id=d.id WHERE d.depth<32 AND n.superseded=0 UNION ALL SELECT r.source_node_id,d.depth+1,CASE WHEN julianday(r.start_time)>julianday(d.lower_bound) THEN r.start_time ELSE d.lower_bound END,CASE WHEN julianday(r.end_time)<julianday(d.upper_bound) THEN r.end_time ELSE d.upper_bound END FROM memory_node_routes r JOIN descendants d ON r.target_node_id=d.id WHERE d.depth<32)";
+const NODE_DIRECT_MATCH:&str="?7='' OR instr(lower(n.label),lower(?7))>0 OR n.id IN (SELECT node_id FROM memory_nodes_fts WHERE memory_nodes_fts MATCH ?8) OR (n.kind='day' AND EXISTS(SELECT 1 FROM memory_nodes child WHERE child.day_key=n.day_key AND child.view=n.view AND child.superseded=0 AND child.invalidated=0 AND child.privacy_epoch IS ?1 AND instr(lower(child.label),lower(?7))>0))";
 
 // These builders only receive constant SQL aliases/bind positions. Values
 // always remain bound parameters. Audio tags reference chunks, not transcript
@@ -27,8 +27,10 @@ fn source_tag(kind: &str, id: &str, tag: &str) -> String {
     }
 }
 fn node_tag(node: &str, tag: &str, epoch: &str) -> String {
-    format!("EXISTS(SELECT 1 FROM memory_nodes tagged WHERE (tagged.id={node} OR tagged.parent_id={node} OR tagged.parent_id IN (SELECT middle.id FROM memory_nodes middle WHERE middle.parent_id={node})) AND tagged.invalidated=0 AND tagged.privacy_epoch IS {epoch} AND (EXISTS(SELECT 1 FROM memory_node_marks nm JOIN explicit_memory_marks m ON m.id=nm.mark_id JOIN explicit_memory_mark_tags mt ON mt.mark_id=m.id JOIN tags t ON t.id=mt.tag_id WHERE nm.node_id=tagged.id AND m.privacy_epoch IS {epoch} AND t.name={tag}) OR EXISTS(SELECT 1 FROM memory_evidence e WHERE e.node_id=tagged.id AND ((e.source_type='frame' AND {}) OR (e.source_type='audio' AND {}) OR (e.source_type='ui_event' AND {})))))",source_tag("frame","e.source_id",tag),source_tag("audio","e.source_id",tag),source_tag("ui_event","e.source_id",tag))
+    let desc = DESCENDANTS.replace("id=?1", &format!("id={node}"));
+    format!("EXISTS({desc} SELECT 1 FROM descendants d JOIN memory_evidence e ON e.node_id=d.id WHERE e.privacy_epoch IS {epoch} AND julianday(e.occurred_at)>=julianday(d.lower_bound) AND julianday(e.occurred_at)<julianday(d.upper_bound) AND ((e.source_type='frame' AND {}) OR (e.source_type='audio' AND {}) OR (e.source_type='ui_event' AND {})) UNION ALL SELECT 1 FROM descendants d JOIN memory_node_marks nm ON nm.node_id=d.id JOIN explicit_memory_marks m ON m.id=nm.mark_id JOIN explicit_memory_mark_tags mt ON mt.mark_id=m.id JOIN tags t ON t.id=mt.tag_id WHERE m.privacy_epoch IS {epoch} AND julianday(m.source_timestamp)>=julianday(d.lower_bound) AND julianday(m.source_timestamp)<julianday(d.upper_bound) AND t.name={tag})",source_tag("frame","e.source_id",tag),source_tag("audio","e.source_id",tag),source_tag("ui_event","e.source_id",tag))
 }
+
 async fn node_has_tag(
     conn: &mut sqlx::SqliteConnection,
     id: &str,
@@ -66,6 +68,66 @@ async fn evidence_has_tag(
 }
 
 impl DatabaseManager {
+    /// Export only immutable source identities. Never hydrate captured bodies
+    /// or disclose a local path merely to construct an index artifact.
+    pub async fn memory_node_source_refs(
+        &self,
+        id: &str,
+        cutoff: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<serde_json::Value>, ExplicitMemoryError> {
+        self.memory_reader_ready().await?;
+        if id.len() > 200 {
+            return Err(invalid("invalid_memory_node_id"));
+        }
+        if let Some(value) = cutoff {
+            time(value)?;
+        }
+        let mut conn = self.acquire_read().await?;
+        let mut tx = conn.begin().await?;
+        let current = epoch(&mut tx).await?;
+        let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM memory_nodes WHERE id=? AND superseded=0 AND invalidated=0 AND privacy_epoch IS ? AND (? IS NULL OR julianday(start_time)>=julianday(?)))")
+            .bind(id).bind(current).bind(cutoff).bind(cutoff).fetch_one(&mut *tx).await?;
+        if !valid {
+            return Err(ExplicitMemoryError::NotFound);
+        }
+        let sql=format!("{DESCENDANTS} SELECT e.source_type,e.source_id,min(e.occurred_at) AS occurred_at,CASE e.source_type WHEN 'frame' THEN EXISTS(SELECT 1 FROM frames WHERE id=e.source_id) WHEN 'ui_event' THEN EXISTS(SELECT 1 FROM ui_events WHERE id=e.source_id) WHEN 'audio' THEN EXISTS(SELECT 1 FROM audio_transcriptions WHERE id=e.source_id) ELSE 0 END AS available FROM memory_evidence e JOIN descendants d ON d.id=e.node_id WHERE e.privacy_epoch IS ?2 AND julianday(e.occurred_at)>=julianday(d.lower_bound) AND julianday(e.occurred_at)<julianday(d.upper_bound) AND (?3 IS NULL OR julianday(e.occurred_at)>=julianday(?3)) GROUP BY e.source_type,e.source_id ORDER BY julianday(occurred_at),e.source_type,e.source_id LIMIT ?4");
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(id)
+            .bind(current)
+            .bind(cutoff)
+            .bind(limit.clamp(1, 32))
+            .fetch_all(&mut *tx)
+            .await?;
+        let mut refs = Vec::new();
+        for row in rows {
+            let kind: String = row.try_get("source_type")?;
+            let source: i64 = row.try_get("source_id")?;
+            let at: DateTime<Utc> = row.try_get("occurred_at")?;
+            let uri = match kind.as_str() {
+                "frame" => format!("screenpipe://frame/{source}"),
+                "audio" => format!("screenpipe://transcript/{source}"),
+                _ => format!("screenpipe://event/{source}"),
+            };
+            refs.push(serde_json::json!({"source_type":kind,"source_id":source,"timestamp":iso(at),"uri":uri,"available":row.try_get::<bool,_>("available")?}));
+        }
+        let sql=format!("{DESCENDANTS} SELECT DISTINCT m.id,m.source_timestamp FROM memory_node_marks nm JOIN descendants d ON d.id=nm.node_id JOIN explicit_memory_marks m ON m.id=nm.mark_id WHERE m.privacy_epoch IS ?2 AND julianday(m.source_timestamp)>=julianday(d.lower_bound) AND julianday(m.source_timestamp)<julianday(d.upper_bound) AND (?3 IS NULL OR julianday(m.source_timestamp)>=julianday(?3)) ORDER BY m.source_timestamp,m.id LIMIT ?4");
+        let marks = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(id)
+            .bind(current)
+            .bind(cutoff)
+            .bind(limit.clamp(1, 32))
+            .fetch_all(&mut *tx)
+            .await?;
+        for row in marks {
+            let mark: String = row.try_get("id")?;
+            let at: DateTime<Utc> = row.try_get("source_timestamp")?;
+            refs.push(serde_json::json!({"source_type":"user_note","source_id":mark,"timestamp":iso(at),"uri":format!("/memory/marks/{mark}"),"available":true}));
+        }
+        tx.commit().await?;
+        Ok(refs)
+    }
+
     pub async fn list_memory_nodes(
         &self,
         query: &MemoryTreeQuery,
@@ -83,10 +145,22 @@ impl DatabaseManager {
         if query
             .kind
             .as_ref()
-            .is_some_and(|k| !matches!(k.as_str(), "day" | "session" | "task"))
+            .is_some_and(|k| !matches!(k.as_str(), "day" | "session" | "task" | "app" | "location"))
         {
             return Err(invalid("invalid_memory_node_kind"));
         }
+        let view = query.view.as_deref().unwrap_or("task");
+        if !matches!(view, "task" | "app") {
+            return Err(invalid("invalid_memory_view"));
+        }
+        let physical_kind = match (view, query.kind.as_deref()) {
+            ("app", Some("app")) => Some("session"),
+            ("app", Some("location")) => Some("task"),
+            ("app", Some("session" | "task")) | ("task", Some("app" | "location")) => {
+                return Err(invalid("invalid_memory_node_kind"))
+            }
+            (_, kind) => kind,
+        };
         for value in [&query.start_time, &query.end_time].into_iter().flatten() {
             time(value)?;
         }
@@ -99,11 +173,11 @@ impl DatabaseManager {
         let q = query.q.as_deref().unwrap_or("");
         let fts = crate::sanitize_fts5_query(q);
         let fts = if fts.is_empty() { "\"\"".into() } else { fts };
-        let sql=format!("SELECT n.*,({NODE_DIRECT_MATCH}) AS non_summary_match FROM memory_nodes n WHERE n.invalidated=0 AND n.privacy_epoch IS ?1 AND ((?2 IS NULL AND ?3 IS NOT NULL) OR n.parent_id IS ?2) AND (?3 IS NULL OR n.kind=?3) AND (?4 IS NULL OR julianday(n.start_time)>=julianday(?4)) AND (?5 IS NULL OR julianday(n.start_time)<julianday(?5)) AND (?6 IS NULL OR EXISTS(SELECT 1 FROM json_each(n.apps_json) WHERE value=?6)) AND (?7='' OR instr(lower(n.label),lower(?7))>0 OR n.id IN (SELECT node_id FROM memory_nodes_fts WHERE memory_nodes_fts MATCH ?8) OR n.id IN (SELECT s.node_id FROM memory_node_summaries s WHERE s.status='ready' AND s.node_fingerprint=n.fingerprint AND s.privacy_epoch IS ?1 AND (s.node_id IN (SELECT node_id FROM memory_summary_fts WHERE memory_summary_fts MATCH ?8) OR instr(lower(s.text),lower(?7))>0)) OR (n.kind='day' AND EXISTS(SELECT 1 FROM memory_nodes child WHERE child.day_key=n.day_key AND child.invalidated=0 AND child.privacy_epoch IS ?1 AND instr(lower(child.label),lower(?7))>0))) AND (?9 IS NULL OR n.timezone_offset_minutes=?9) AND (?12 IS NULL OR {}) ORDER BY n.start_time DESC,n.id LIMIT ?10 OFFSET ?11",node_tag("n.id","?12","?1"));
+        let sql=format!("SELECT n.*,({NODE_DIRECT_MATCH}) AS non_summary_match FROM memory_nodes n WHERE n.view=?13 AND n.superseded=0 AND n.invalidated=0 AND n.privacy_epoch IS ?1 AND ((?2 IS NULL AND ?3 IS NOT NULL) OR n.parent_id IS ?2) AND (?3 IS NULL OR n.kind=?3) AND (?4 IS NULL OR julianday(n.start_time)>=julianday(?4)) AND (?5 IS NULL OR julianday(n.start_time)<julianday(?5)) AND (?6 IS NULL OR EXISTS(SELECT 1 FROM json_each(n.apps_json) WHERE value=?6)) AND (?7='' OR instr(lower(n.label),lower(?7))>0 OR n.id IN (SELECT node_id FROM memory_nodes_fts WHERE memory_nodes_fts MATCH ?8) OR n.id IN (SELECT s.node_id FROM memory_node_summaries s WHERE s.status='ready' AND s.node_fingerprint=n.fingerprint AND s.privacy_epoch IS ?1 AND (s.node_id IN (SELECT node_id FROM memory_summary_fts WHERE memory_summary_fts MATCH ?8) OR instr(lower(s.text),lower(?7))>0)) OR (n.kind='day' AND EXISTS(SELECT 1 FROM memory_nodes child WHERE child.day_key=n.day_key AND child.view=n.view AND child.superseded=0 AND child.invalidated=0 AND child.privacy_epoch IS ?1 AND instr(lower(child.label),lower(?7))>0))) AND (?9 IS NULL OR n.timezone_offset_minutes=?9) AND (?12 IS NULL OR {}) ORDER BY n.start_time DESC,n.id LIMIT ?10 OFFSET ?11",node_tag("n.id","?12","?1"));
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(current)
             .bind(query.parent_id.as_deref())
-            .bind(query.kind.as_deref())
+            .bind(physical_kind)
             .bind(query.start_time.as_deref())
             .bind(query.end_time.as_deref())
             .bind(query.app.as_deref())
@@ -117,6 +191,7 @@ impl DatabaseManager {
             })
             .bind(query.offset.min(100_000))
             .bind(query.tag.as_deref())
+            .bind(view)
             .fetch_all(&mut *tx)
             .await?;
         let mut result = Vec::new();
@@ -237,35 +312,35 @@ impl DatabaseManager {
         let before = self.memory_index_epoch().await?;
         let mut conn = self.acquire_read().await?;
         let mut tx = conn.begin().await?;
-        let Some(row)=sqlx::query("SELECT * FROM memory_nodes WHERE id=? AND invalidated=0 AND privacy_epoch IS ? AND (? IS NULL OR julianday(start_time)>=julianday(?))")
+        let Some(row)=sqlx::query("SELECT * FROM memory_nodes WHERE id=? AND superseded=0 AND invalidated=0 AND privacy_epoch IS ? AND (? IS NULL OR julianday(start_time)>=julianday(?))")
             .bind(id).bind(before).bind(cutoff).bind(cutoff).fetch_optional(&mut *tx).await? else {return Ok(None);};
         let node = row_node(&row)?;
-        let sql=format!("{DESCENDANTS} SELECT e.source_type,e.source_id,min(e.occurred_at) AS occurred_at FROM memory_evidence e JOIN descendants d ON e.node_id=d.id GROUP BY e.source_type,e.source_id ORDER BY occurred_at,e.source_type,e.source_id LIMIT ?2");
+        let sql=format!("{DESCENDANTS} SELECT e.source_type,e.source_id,min(e.occurred_at) AS occurred_at FROM memory_evidence e JOIN descendants d ON e.node_id=d.id WHERE e.privacy_epoch IS (SELECT privacy_epoch FROM memory_nodes WHERE id=?1) AND julianday(e.occurred_at)>=julianday(d.lower_bound) AND julianday(e.occurred_at)<julianday(d.upper_bound) GROUP BY e.source_type,e.source_id ORDER BY occurred_at,e.source_type,e.source_id LIMIT ?2");
         let refs = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(id)
             .bind(limit)
             .fetch_all(&mut *tx)
             .await?;
-        let count_sql=format!("{DESCENDANTS} SELECT count(*) FROM (SELECT DISTINCT e.source_type,e.source_id FROM memory_evidence e JOIN descendants d ON e.node_id=d.id)");
+        let count_sql=format!("{DESCENDANTS} SELECT count(*) FROM (SELECT DISTINCT e.source_type,e.source_id FROM memory_evidence e JOIN descendants d ON e.node_id=d.id WHERE e.privacy_epoch IS (SELECT privacy_epoch FROM memory_nodes WHERE id=?1) AND julianday(e.occurred_at)>=julianday(d.lower_bound) AND julianday(e.occurred_at)<julianday(d.upper_bound))");
         let evidence_total: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(count_sql))
             .bind(id)
             .fetch_one(&mut *tx)
             .await?;
-        let marks_sql=format!("{DESCENDANTS} SELECT DISTINCT m.mark_id FROM memory_node_marks m JOIN descendants d ON m.node_id=d.id JOIN explicit_memory_marks mark ON mark.id=m.mark_id WHERE (?2 IS NULL OR julianday(mark.source_timestamp)>=julianday(?2)) ORDER BY m.mark_id LIMIT ?3");
+        let marks_sql=format!("{DESCENDANTS} SELECT DISTINCT m.mark_id FROM memory_node_marks m JOIN descendants d ON m.node_id=d.id JOIN explicit_memory_marks mark ON mark.id=m.mark_id WHERE mark.privacy_epoch IS (SELECT privacy_epoch FROM memory_nodes WHERE id=?1) AND julianday(mark.source_timestamp)>=julianday(d.lower_bound) AND julianday(mark.source_timestamp)<julianday(d.upper_bound) AND (?2 IS NULL OR julianday(mark.source_timestamp)>=julianday(?2)) ORDER BY m.mark_id LIMIT ?3");
         let mark_ids: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(marks_sql))
             .bind(id)
             .bind(cutoff)
             .bind(limit)
             .fetch_all(&mut *tx)
             .await?;
-        let mark_count_sql=format!("{DESCENDANTS} SELECT count(DISTINCT m.mark_id) FROM memory_node_marks m JOIN descendants d ON m.node_id=d.id JOIN explicit_memory_marks mark ON mark.id=m.mark_id WHERE (?2 IS NULL OR julianday(mark.source_timestamp)>=julianday(?2))");
+        let mark_count_sql=format!("{DESCENDANTS} SELECT count(DISTINCT m.mark_id) FROM memory_node_marks m JOIN descendants d ON m.node_id=d.id JOIN explicit_memory_marks mark ON mark.id=m.mark_id WHERE mark.privacy_epoch IS (SELECT privacy_epoch FROM memory_nodes WHERE id=?1) AND julianday(mark.source_timestamp)>=julianday(d.lower_bound) AND julianday(mark.source_timestamp)<julianday(d.upper_bound) AND (?2 IS NULL OR julianday(mark.source_timestamp)>=julianday(?2))");
         let mark_total: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(mark_count_sql))
             .bind(id)
             .bind(cutoff)
             .fetch_one(&mut *tx)
             .await?;
-        let children_total:i64=sqlx::query_scalar("SELECT count(*) FROM memory_nodes WHERE parent_id=? AND invalidated=0 AND privacy_epoch IS ?").bind(id).bind(before).fetch_one(&mut *tx).await?;
-        let children=sqlx::query("SELECT * FROM memory_nodes WHERE parent_id=? AND invalidated=0 AND privacy_epoch IS ? ORDER BY start_time,id LIMIT ?").bind(id).bind(before).bind(limit).fetch_all(&mut *tx).await?.iter().map(row_node).collect::<Result<Vec<_>,_>>()?;
+        let children_total:i64=sqlx::query_scalar("SELECT count(*) FROM memory_nodes WHERE parent_id=? AND superseded=0 AND invalidated=0 AND privacy_epoch IS ?").bind(id).bind(before).fetch_one(&mut *tx).await?;
+        let children=sqlx::query("SELECT * FROM memory_nodes WHERE parent_id=? AND superseded=0 AND invalidated=0 AND privacy_epoch IS ? ORDER BY start_time,id LIMIT ?").bind(id).bind(before).bind(limit).fetch_all(&mut *tx).await?.iter().map(row_node).collect::<Result<Vec<_>,_>>()?;
         tx.commit().await?;
         drop(conn);
         let mut evidence = Vec::new();
@@ -392,7 +467,11 @@ impl DatabaseManager {
         let mut node_query = query.clone();
         node_query.parent_id = None;
         node_query.offset = 0;
-        for kind in ["task", "session", "day"] {
+        for kind in if query.view.as_deref() == Some("app") {
+            ["location", "app", "day"]
+        } else {
+            ["task", "session", "day"]
+        } {
             node_query.kind = Some(kind.into());
             for node in self
                 .list_memory_nodes(&node_query)

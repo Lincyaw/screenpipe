@@ -170,6 +170,14 @@ impl DatabaseManager {
         if (policy.text || policy.images) && policy.identity.is_empty() {
             return Err(err("privacy policy identity is required"));
         }
+        let _exports = self.memory_export_gate().await?;
+        let previous = self.release_policy().await?;
+        if previous.identity != policy.identity
+            || previous.text != policy.text
+            || previous.images != policy.images
+        {
+            self.clear_memory_exports_locked().await?;
+        }
         let mut tx = self.begin_immediate_with_retry().await?;
         sqlx::raw_sql(SCHEMA).execute(&mut **tx.conn()).await?;
         // The full model identity is stored once. Receipt keys are local policy
@@ -359,6 +367,7 @@ impl DatabaseManager {
                 }
             }
             if changed_contract {
+                self.clear_memory_exports_locked().await?;
                 // A receipt from an older field/trigger contract cannot certify
                 // newly covered values, even if the model policy did not change.
                 sqlx::query("UPDATE _privacy_release SET policy=NULL,revision=revision+1,attempts=0,retry_at=NULL WHERE kind=?")
@@ -395,6 +404,9 @@ impl DatabaseManager {
                 writers.push(conn);
             }
         }
+        // The frame-policy adapter acquires the same export gate before its
+        // own writer. This transaction has committed; release our guard first.
+        drop(_exports);
         if policy.text {
             self.set_frame_privacy_policy(&crate::storage::PrivacyPolicy {
                 identity: policy.identity.clone(),
@@ -695,6 +707,12 @@ impl DatabaseManager {
                 )
                 .await;
         }
+        let _exports = match (job.kind.as_str(), job.id.parse::<i64>()) {
+            ("frames", Ok(id)) => self.memory_export_source_guard("frame", id).await?,
+            ("audio", Ok(id)) => self.memory_export_source_guard("audio", id).await?,
+            ("input", Ok(id)) => self.memory_export_source_guard("ui_event", id).await?,
+            _ => self.memory_export_gate().await?,
+        };
         let mut tx = self.begin_immediate_with_retry().await?;
         let current: (String, i64, bool) = sqlx::query_as("SELECT identity,COALESCE((SELECT revision FROM _privacy_release WHERE kind=? AND id=? AND policy IS NULL),-1),text_required FROM _privacy_policy WHERE id=1").bind(&job.kind).bind(&job.id).fetch_one(&mut **tx.conn()).await?;
         if current != (job.policy.clone(), job.revision, true) {

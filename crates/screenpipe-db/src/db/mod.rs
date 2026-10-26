@@ -471,10 +471,12 @@ mod feedback;
 mod frames;
 mod hierarchical_memory;
 pub use hierarchical_memory::{MemoryNode, MemoryEvidence, MemoryNodeDetail, MemoryTreeQuery,
-    MemoryIndexJob, MemoryIndexStatus, MemorySearchHit, MemoryNodeCorrection};
+    MemoryIndexJob, MemoryIndexStatus, MemoryProjectionCursor, MemorySearchHit, MemoryNodeCorrection};
 mod hierarchy_summary;
 pub use hierarchy_summary::{HierarchySummary, HierarchySummaryConfig, HierarchySummaryJob, HierarchySummaryCounts, SummaryCitation, SummaryCoverage, SummaryStatement, SummarySourceVersion};
 mod maintenance;
+mod memory_exports;
+pub use memory_exports::revoke_memory_exports_at;
 mod marked_capture;
 pub use marked_capture::{MarkedCaptureOutcome, MarkedCaptureRequest};
 mod meetings;

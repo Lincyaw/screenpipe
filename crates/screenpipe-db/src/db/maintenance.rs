@@ -162,6 +162,7 @@ impl DatabaseManager {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<DeleteTimeRangeResult, sqlx::Error> {
+        let _exports = self.revoke_memory_exports().await?;
         let mut tx = self.begin_immediate_with_retry().await?;
 
         let start_str = start.to_rfc3339();
@@ -379,6 +380,7 @@ impl DatabaseManager {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<DeleteTimeRangeResult, sqlx::Error> {
+        let _exports = self.revoke_memory_exports().await?;
         let mut tx = self.begin_immediate_with_retry().await?;
 
         let start_str = start.to_rfc3339();
@@ -753,6 +755,7 @@ impl DatabaseManager {
         end: DateTime<Utc>,
     ) -> Result<StripTextResult, sqlx::Error> {
         let archived_stripped = self.strip_archived_frame_details(start, end).await?;
+        let _exports = self.revoke_memory_exports().await?;
         let mut tx = self.begin_immediate_with_retry().await?;
 
         let start_str = start.to_rfc3339();
@@ -984,6 +987,7 @@ impl DatabaseManager {
         collect_all_files: bool,
         layout_start: DateTime<Utc>,
     ) -> Result<DeleteTimeRangeResult, sqlx::Error> {
+        let _exports = self.revoke_memory_exports().await?;
         let mut tx = self.begin_immediate_with_retry().await?;
         let explicit_memory_epoch = super::explicit_memory::explicit_memory_retention_epoch(
             &mut **tx.conn(),
@@ -1314,6 +1318,7 @@ impl DatabaseManager {
         &self,
         machine_id: &str,
     ) -> Result<DeleteTimeRangeResult, sqlx::Error> {
+        let _exports = self.revoke_memory_exports().await?;
         let mut tx = self.begin_immediate_with_retry().await?;
 
         // 2. Delete elements for frames from this machine (no CASCADE on FK)

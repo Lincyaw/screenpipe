@@ -607,6 +607,7 @@ impl DatabaseManager {
         id: &str,
         update: &UpdateExplicitMemoryMark,
     ) -> Result<ExplicitMemoryMark, ExplicitMemoryError> {
+        let _exports = self.revoke_memory_exports().await?;
         validate_content(
             &update.title,
             &update.note,
@@ -679,6 +680,7 @@ impl DatabaseManager {
         id: &str,
         revision: i64,
     ) -> Result<bool, ExplicitMemoryError> {
+        let _exports = self.revoke_memory_exports().await?;
         let mut tx = self.begin_immediate_with_retry().await?;
         let current: Option<i64> =
             sqlx::query_scalar("SELECT revision FROM explicit_memory_marks WHERE id=?")

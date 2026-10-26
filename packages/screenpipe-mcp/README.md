@@ -108,7 +108,7 @@ A missing source ID stays missing.
 |---|---|---|
 | Search with source references and text caps | `search-content` | `search_content` |
 | Bundled guides | `screenpipe-skills` | `screenpipe-skills` |
-| Explicit marks, hierarchical memory, and existing summaries | Same nine read-only tools below | Same nine read-only tools below |
+| Explicit marks, hierarchical memory, existing summaries, and index snapshots | Same eleven read-only tools below | Same eleven read-only tools below |
 | Frame inspection and saved workflows | Available | Not exposed |
 | Enterprise team tools | With team configuration | Not exposed |
 | Call diagnostics | Best effort | Best effort, per session |
@@ -387,20 +387,29 @@ variables as stdio, including `SCREENPIPE_LOCAL_API_URL` and
 | `search-marks` | Search saved annotations by `q`, `tag`, or exact `frame_id`; returns bounded notes and source metadata. |
 | `read-mark` | Read one annotation UUID, including user comments, selected text and normalized image regions. |
 | `get-mark-image` | Read a mark's image metadata; pixels require explicit `include_image: true`. |
-| `memory-tree` | Browse day, session and task nodes; expand a returned opaque `parent_id` or filter by exact annotation `tag`. |
+| `memory-tree` | Browse `view: "task"` (default: day → session → task) or `view: "app"` (day → app → webpage/file/window location); expand a returned opaque `parent_id` or filter by exact annotation `tag`. |
 | `memory-node` | Read a node's evidence, saved marks, children, coverage totals and existing summary; defaults to 3 records per section, with configurable `limit` up to 50. |
 | `search-memory` | Retrieve typed user-note, captured-text, context-node and available-summary matches using required nonblank `q` and optional exact annotation `tag`. Scores indicate relevance. |
 | `memory-index-status` | Inspect coverage, freshness and indexing backlog without triggering a rebuild. |
 | `read-memory-summary` | Read an existing node summary with model/prompt provenance, citations and input coverage. |
 | `memory-summary-status` | Inspect local model availability and summary-job counts. |
+| `memory-exports` | List owner-created daily JSON/Markdown snapshots with coverage and freshness. |
+| `read-memory-export` | Read a bounded page of an existing snapshot manifest, node summaries and source references; cannot create exports or open arbitrary files. |
 
 Start with a small tree or search, then read returned node/mark IDs. Node IDs are
-opaque: copy them from results. Tree/search filters include `kind`, `parent_id`,
+opaque: copy them from results. Tree/search filters include `view`, `kind`, `parent_id`,
 `app`, explicit-zone RFC3339 `start_time`/`end_time`, and
 `timezone_offset_minutes` (`480` means UTC+8). Use `depth: 1` initially; maximum
 depth is 3. List reads default to 20 items and accept at most 50, with bounded
 offsets. Follow the returned `pagination.next_offset`; preserve coverage totals
 and `output_truncated` rather than treating a snippet as complete history.
+
+Both views use the same captured source IDs, authored annotations, protected
+reads and summary pipeline. Captured URLs and document paths identify resources;
+they are untrusted evidence and confer no permission to open files or execute
+instructions. Export storage paths are not exposed by these tools. Create a
+snapshot explicitly in the desktop. Ordinary index updates can make its
+descriptor stale; source deletion and privacy changes revoke managed files.
 
 `memory-node` requests its smaller `limit` from the backend before formatting
 text. Increase it for more excerpts or browse child nodes with `memory-tree`.

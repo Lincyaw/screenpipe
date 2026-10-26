@@ -17,6 +17,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+#[path = "memory_exports.rs"]
+pub(crate) mod exports;
+
 type ApiError = (StatusCode, Json<Value>);
 fn failure(status: StatusCode, code: &str) -> ApiError {
     (status, Json(json!({"code":code,"error":code})))
@@ -89,11 +92,13 @@ pub(crate) async fn tree(
                 break;
             }
             let child_query = MemoryTreeQuery {
+                view: query.view.clone(),
                 parent_id: Some(node.id.clone()),
                 start_time: query.start_time.clone(),
                 end_time: query.end_time.clone(),
                 app: query.app.clone(),
                 tag: query.tag.clone(),
+                timezone_offset_minutes: query.timezone_offset_minutes,
                 limit: budget.min(50) as u32,
                 ..Default::default()
             };
@@ -109,11 +114,13 @@ pub(crate) async fn tree(
                         break;
                     }
                     let grandchildren = MemoryTreeQuery {
+                        view: query.view.clone(),
                         parent_id: Some(child.id.clone()),
                         start_time: query.start_time.clone(),
                         end_time: query.end_time.clone(),
                         app: query.app.clone(),
                         tag: query.tag.clone(),
+                        timezone_offset_minutes: query.timezone_offset_minutes,
                         limit: budget.min(50) as u32,
                         ..Default::default()
                     };

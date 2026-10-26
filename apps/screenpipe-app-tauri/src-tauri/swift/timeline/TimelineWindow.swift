@@ -605,16 +605,10 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
 
     /// True acknowledges a selected target, not merely a queued day request.
     static func navigate(model: TimelineViewModel, frameId: String?, timestamp: String?) -> Bool {
-        if let frameId,
-           let index = TimelineNavigation.index(ofFrameId: frameId, in: model.frames) {
-            if model.currentIndex == index,
-               model.currentImage != nil || model.imageUnavailable {
-                model.cancelExternalNavigation()
-                return true
-            }
+        if let frameId {
+            if model.navigateToLoadedFrame(frameId: frameId) { return true }
             model.beginExternalNavigation(superseding: true)
-            model.setExternalNavigationIndex(index)
-            return true
+            return false
         }
         guard let timestamp, let date = TimelineTime.parse(timestamp) else {
             model.beginExternalNavigation(superseding: true)

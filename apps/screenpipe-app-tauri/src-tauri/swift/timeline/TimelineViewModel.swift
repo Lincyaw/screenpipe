@@ -366,22 +366,31 @@ final class TimelineViewModel: ObservableObject {
         exitSearchReview()
         annotationNavigationPending = true
         filters.reset()
-        if currentImage != nil, !isLoadingImage, currentImageFrameId == frameId,
-           displayFrameId == frameId {
+        if navigateToLoadedFrame(frameId: frameId) { return }
+        beginExternalNavigation(superseding: true)
+        pendingSearchNavigation = (frameId: frameId, timestamp: timestamp)
+        changeDate(to: timestamp, supersedePendingNavigation: true,
+                   preservePendingSearchNavigation: true)
+        requestSearchWindow(around: timestamp)
+    }
+
+    /// An exact frame selects its device as well as its time-series row. A
+    /// different monitor's loaded pixels never acknowledge this navigation.
+    @discardableResult
+    func navigateToLoadedFrame(frameId: String) -> Bool {
+        guard let index = TimelineNavigation.index(ofFrameId: frameId, in: frames) else {
+            return false
+        }
+        preferredFrameId = frameId
+        if currentIndex == index, currentImage != nil, !isLoadingImage,
+           currentImageFrameId == frameId {
             cancelExternalNavigation()
             publishAnnotationSource(force: true)
-            return
+            return true
         }
         beginExternalNavigation(superseding: true)
-        if let index = TimelineNavigation.index(ofFrameId: frameId, in: frames) {
-            preferredFrameId = frameId
-            setExternalNavigationIndex(index)
-        } else {
-            pendingSearchNavigation = (frameId: frameId, timestamp: timestamp)
-            changeDate(to: timestamp, supersedePendingNavigation: true,
-                       preservePendingSearchNavigation: true)
-            requestSearchWindow(around: timestamp)
-        }
+        setExternalNavigationIndex(index)
+        return true
     }
 
     func cancelAnnotationSourceNavigation() {

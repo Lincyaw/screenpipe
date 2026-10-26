@@ -795,6 +795,7 @@ impl DatabaseManager {
     }
 
     pub async fn delete_speaker(&self, id: i64) -> Result<(), sqlx::Error> {
+        let _exports = self.revoke_memory_exports().await?;
         let mut tx = self.begin_immediate_with_retry().await?;
 
         // Collect candidate chunk IDs before deleting transcriptions

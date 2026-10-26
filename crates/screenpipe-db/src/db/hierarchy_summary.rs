@@ -151,7 +151,7 @@ async fn load_summary(
     conn: &mut sqlx::SqliteConnection,
     id: &str,
 ) -> Result<Option<HierarchySummary>, ExplicitMemoryError> {
-    let Some(row)=sqlx::query("SELECT s.*,n.fingerprint AS current_fingerprint,n.invalidated AS invalidated,n.privacy_epoch AS node_epoch FROM memory_node_summaries s JOIN memory_nodes n ON n.id=s.node_id WHERE s.node_id=?").bind(id).fetch_optional(&mut *conn).await? else{return Ok(None)};
+    let Some(row)=sqlx::query("SELECT s.*,n.fingerprint AS current_fingerprint,n.invalidated AS invalidated,n.privacy_epoch AS node_epoch FROM memory_node_summaries s JOIN memory_nodes n ON n.id=s.node_id WHERE s.node_id=? AND n.superseded=0").bind(id).fetch_optional(&mut *conn).await? else{return Ok(None)};
     let current_epoch = epoch(conn).await?;
     let stored_epoch: Option<i64> = row.try_get("privacy_epoch")?;
     let node_epoch: Option<i64> = row.try_get("node_epoch")?;
@@ -449,7 +449,7 @@ impl DatabaseManager {
             return Ok(None);
         }
         let current_epoch = epoch(&mut **tx.conn()).await?;
-        let id:Option<String>=sqlx::query_scalar("SELECT j.id FROM memory_summary_jobs j JOIN memory_nodes n ON n.id=j.node_id WHERE j.status='pending' AND j.next_attempt_at<=unixepoch() AND n.invalidated=0 AND n.privacy_epoch IS ?1 ORDER BY CASE n.kind WHEN 'task' THEN 0 WHEN 'session' THEN 1 WHEN 'day' THEN 2 ELSE 3 END,j.created_at,j.rowid LIMIT 1").bind(current_epoch).fetch_optional(&mut **tx.conn()).await?;
+        let id:Option<String>=sqlx::query_scalar("SELECT j.id FROM memory_summary_jobs j JOIN memory_nodes n ON n.id=j.node_id WHERE j.status='pending' AND j.next_attempt_at<=unixepoch() AND n.invalidated=0 AND n.superseded=0 AND n.privacy_epoch IS ?1 ORDER BY CASE n.kind WHEN 'task' THEN 0 WHEN 'session' THEN 1 WHEN 'day' THEN 2 ELSE 3 END,j.created_at,j.rowid LIMIT 1").bind(current_epoch).fetch_optional(&mut **tx.conn()).await?;
         let Some(id) = id else {
             tx.commit().await?;
             return Ok(None);
@@ -591,6 +591,6 @@ impl DatabaseManager {
         limit: u32,
     ) -> Result<Vec<String>, ExplicitMemoryError> {
         let mut conn = self.acquire_read().await?;
-        Ok(sqlx::query_scalar("SELECT n.id FROM memory_nodes n LEFT JOIN memory_node_summaries s ON s.node_id=n.id WHERE n.provisional=0 AND n.invalidated=0 AND (s.node_id IS NULL OR s.status='stale') AND NOT EXISTS(SELECT 1 FROM memory_summary_jobs j WHERE j.node_id=n.id AND j.status IN ('pending','running')) ORDER BY CASE n.kind WHEN 'task' THEN 0 WHEN 'session' THEN 1 ELSE 2 END,n.start_time DESC LIMIT ?").bind(i64::from(limit.min(8))).fetch_all(&mut *conn).await?)
+        Ok(sqlx::query_scalar("SELECT n.id FROM memory_nodes n LEFT JOIN memory_node_summaries s ON s.node_id=n.id WHERE n.provisional=0 AND n.invalidated=0 AND n.superseded=0 AND (s.node_id IS NULL OR s.status='stale') AND NOT EXISTS(SELECT 1 FROM memory_summary_jobs j WHERE j.node_id=n.id AND j.status IN ('pending','running')) ORDER BY CASE n.kind WHEN 'task' THEN 0 WHEN 'session' THEN 1 ELSE 2 END,n.start_time DESC LIMIT ?").bind(i64::from(limit.min(8))).fetch_all(&mut *conn).await?)
     }
 }

@@ -3,7 +3,7 @@
 
 # Local annotations and activity memory
 
-<!-- doc-covers: apps/screenpipe-app-tauri/components/explicit-memory, apps/screenpipe-app-tauri/app/annotate, apps/screenpipe-app-tauri/lib/explicit-memory.ts, apps/screenpipe-app-tauri/src-tauri/src/annotation_capture.rs, crates/screenpipe-db/src/db/explicit_memory.rs, crates/screenpipe-db/src/db/marked_capture.rs, crates/screenpipe-engine/src/routes/explicit_memory.rs, crates/screenpipe-engine/src/marked_capture.rs, apps/screenpipe-app-tauri/components/memory-explorer.tsx, apps/screenpipe-app-tauri/lib/hierarchical-memory.ts, crates/screenpipe-db/src/db/hierarchical_memory.rs, crates/screenpipe-db/src/db/hierarchy_summary.rs, crates/screenpipe-engine/src/hierarchical_memory.rs, crates/screenpipe-engine/src/hierarchy_summary.rs, crates/screenpipe-engine/src/routes/hierarchical_memory.rs, packages/screenpipe-mcp/src/memory-tools.ts -->
+<!-- doc-covers: apps/screenpipe-app-tauri/components/explicit-memory, apps/screenpipe-app-tauri/app/annotate, apps/screenpipe-app-tauri/lib/explicit-memory.ts, apps/screenpipe-app-tauri/src-tauri/src/annotation_capture.rs, crates/screenpipe-db/src/db/explicit_memory.rs, crates/screenpipe-db/src/db/marked_capture.rs, crates/screenpipe-engine/src/routes/explicit_memory.rs, crates/screenpipe-engine/src/marked_capture.rs, apps/screenpipe-app-tauri/components/memory-explorer.tsx, apps/screenpipe-app-tauri/lib/hierarchical-memory.ts, crates/screenpipe-db/src/db/hierarchical_memory.rs, crates/screenpipe-db/src/db/hierarchical_memory, crates/screenpipe-db/src/db/memory_exports.rs, crates/screenpipe-db/src/migrations/20261026010000_incremental_memory_projection.sql, crates/screenpipe-db/src/migrations/20261026020000_memory_mark_projection_recount.sql, crates/screenpipe-db/src/db/hierarchy_summary.rs, crates/screenpipe-engine/src/hierarchical_memory.rs, crates/screenpipe-engine/src/hierarchy_summary.rs, crates/screenpipe-engine/src/routes/hierarchical_memory.rs, crates/screenpipe-engine/src/routes/memory_exports.rs, apps/screenpipe-app-tauri/src-tauri/swift/timeline/TimelineViewModel.swift, apps/screenpipe-app-tauri/src-tauri/swift/timeline/TimelineWindow.swift, packages/screenpipe-mcp/src/memory-tools.ts -->
 <!-- doc-verified: 5d84243ab130270c951543846f87fdec367cf19a -->
 
 This personal-fork feature saves user notes, regions, and text quotes against exact local frames. Capture a new screenshot from another application, or annotate a historical frame in Timeline. A saved annotation can be searched, edited, opened at its source, and deleted without changing the original screenshot.
@@ -89,9 +89,14 @@ The local memory layer now includes historical annotations, fresh shortcut captu
 
 ## Browse the activity hierarchy
 
-Open **Activity → Memory explorer → Activity tree**. Days contain sessions, and sessions contain tasks with exact source references. App names are facets rather than a fixed parent layer, so related work in a browser and editor can share a task. Labels and boundaries are deterministic inferences; they do not establish the user's actual intent.
+Open **Activity → Memory explorer** and choose a view:
 
-Choose dates and **Index selected dates** for bounded historical backfill, up to 31 days per request. The initial worker prioritizes the most recent hour and backfills seven days. Durable jobs and cursors resume after restart. A sliding reconciliation window accommodates late transcription. Reads use the saved index rather than rescanning the complete capture history. Processing failures defer index work while capture continues through the existing writer.
+- **Tasks**: day → session → task → exact source evidence. Related work in a browser and editor can share a task.
+- **Applications**: day → application → webpage, file or window → exact source evidence. A URL takes precedence over a captured document path, then the window title; an unknown location stays explicitly unknown.
+
+Both views use the same node, source-reference, annotation, summary and privacy mechanisms. They do not copy recordings or run separate capture/search pipelines. Existing task IDs and authored corrections remain usable. Application and location labels can be renamed; merge and split remain task-view corrections. Labels and boundaries are deterministic inferences; they do not establish the user's actual intent.
+
+Choose dates and **Index selected dates** for bounded historical backfill, up to 31 days per request. The initial worker prioritizes the most recent hour and backfills seven days. Durable jobs and source cursors resume after restart. A sliding reconciliation window accommodates late transcription. Projection updates are paged, idempotent batches of source references and affected ancestors; daily evidence counts do not impose a recording or indexing ceiling. The processing budget bounds each background batch, rather than requiring an entire day to fit in one transaction. Reads use the saved index rather than rescanning the complete capture history. Processing failures defer index work while capture continues through the existing writer.
 
 Open a node to inspect child activities, annotations, source counts, and bounded evidence excerpts. **View source** opens an exact frame. Evidence without a frame offers **View time in timeline**, which navigates to that timestamp rather than claiming an exact screenshot match. **My marks** searches saved annotations independently of the tree.
 
@@ -115,22 +120,32 @@ Choose a closed task, session or day and **Generate summary**. Child summaries a
 
 Jobs are persisted, budgeted and retried with backoff. Changed inputs invalidate cached results. Failed, stale and unavailable results expose status without old summary text. With no configured or reachable model, indexing, tree browsing and keyword retrieval remain available. Quitting into saved-history mode suspends indexing and inference while allowing authenticated reads.
 
+## Export a daily index
+
+Open a day or one of its descendants and choose **Export day**, or select a single date before exporting. One explicit owner request produces JSON and Markdown from the same versioned snapshot under the active data directory's `memory/exports/<date>/<export-id>/`. The files contain readable labels, ready summaries, source links and coverage metadata; they do not copy raw recording excerpts or screenshots. A bounded export can be partial: check its `coverage` and `truncated` fields before treating it as a complete daily history.
+
+These are managed snapshots, not the canonical index. Recording continues independently. Source erasure, retention deletion, privacy-policy changes, and relevant annotation changes revoke managed snapshots before their mutation commits. Copies taken outside the managed directory are independent user exports. Vault-enabled profiles reject plaintext file export. MCP reads bounded manifests through the authenticated API; it cannot choose a filesystem path, create an export or read arbitrary files.
+
 ## Read through MCP
 
-The repository's MCP build exposes the same nine read-only tools over stdio and HTTP:
+The repository's MCP build exposes the same memory tools over stdio and HTTP:
 
 | Tool | Purpose |
 | --- | --- |
 | `search-marks` | Find user-authored annotations |
 | `read-mark` | Read one annotation, quotes and normalized regions |
 | `get-mark-image` | Read image metadata; include pixels only when explicitly requested |
-| `memory-tree` | Expand bounded day/session/task nodes |
+| `memory-tree` | Expand task or application views; omit `view` to retain the task view |
 | `memory-node` | Read one node's sources, annotations and children |
 | `search-memory` | Search across authored, captured and derived context |
 | `memory-index-status` | Inspect persisted index progress and coverage |
 | `read-memory-summary` | Read an existing source-cited summary |
 | `memory-summary-status` | Inspect local model availability and queued work |
+| `memory-exports` | List managed daily index snapshots |
+| `read-memory-export` | Read a bounded snapshot manifest and its coverage |
 
-These nine MCP tools use the configured local owner's API key. They cannot start capture, write annotations, correct the tree, schedule a rebuild or generate summaries. The desktop owner controls those memory operations through the UI/API. Other existing MCP tools keep their separate capabilities. Memory tools enforce query/output limits, preserve source identifiers and attribution, and withhold stale summary text. Build the local package with `cd packages/screenpipe-mcp && bun run build`; a registry package does not include unshipped repository changes. Debug desktop builds locate this checkout’s existing `dist/cli.js` and configure detected clients to use it, including when using the production data profile. Explicit `SCREENPIPE_MCP_ENTRYPOINT` and `SCREENPIPE_MCP_BUN` overrides must be existing absolute local paths; invalid overrides fail without replacing client configuration or downloading a fallback. Restart the Screenpipe MCP connection in the agent after rebuilding to refresh its tool inventory.
+These MCP tools use the configured local owner's API key. They cannot start capture, write annotations, correct the tree, schedule a rebuild, generate summaries or create exports. The desktop owner controls those memory operations through the UI/API. Other existing MCP tools keep their separate capabilities. Memory tools enforce query/output limits, preserve source identifiers and attribution, and withhold stale summary text. Build the local package with `cd packages/screenpipe-mcp && bun run build`; a registry package does not include unshipped repository changes. Debug desktop builds locate this checkout’s existing `dist/cli.js` and configure detected clients to use it, including when using the production data profile. Explicit `SCREENPIPE_MCP_ENTRYPOINT` and `SCREENPIPE_MCP_BUN` overrides must be existing absolute local paths; invalid overrides fail without replacing client configuration or downloading a fallback. Restart the Screenpipe MCP connection in the agent after rebuilding to refresh its tool inventory.
+
+`GET /memory/tree?view=task` retains the existing hierarchy; `view=app` exposes application and location nodes using the same response shape and opaque IDs. `POST /memory/exports` accepts one `{date, view, timezone_offset_minutes}`. `GET /memory/exports` lists manifests, and `GET /memory/exports/:id/manifest` pages through an existing snapshot. Export paths are returned only to the owner creating the files.
 
 The additional owner-authenticated API routes are `GET /memory/tree`, `GET /memory/nodes/:id`, `GET /memory/search`, `GET /memory/index/status`, `POST /memory/index/rebuild`, `PATCH /memory/nodes/:id`, `POST /memory/nodes/:id/merge`, `POST /memory/nodes/:id/split`, `GET/PUT /memory/summary/config`, `POST /memory/nodes/:id/summarize`, `GET /memory/nodes/:id/summary`, `GET /memory/summary/jobs/:id`, and `GET /memory/summary/status`. Background workers and all derived writes use the existing database coordinator; inference and source hydration happen outside write transactions.

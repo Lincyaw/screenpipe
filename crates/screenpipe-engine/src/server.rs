@@ -1151,6 +1151,8 @@ impl SCServer {
                         axum::routing::get(crate::routes::explicit_memory::get_mark_image),
                     )
                     .route("/memory/tree", get(crate::routes::hierarchical_memory::tree))
+                    .route("/memory/exports", get(crate::routes::hierarchical_memory::exports::list).post(crate::routes::hierarchical_memory::exports::create))
+                    .route("/memory/exports/:id/manifest", get(crate::routes::hierarchical_memory::exports::manifest))
                     .route("/memory/search", get(crate::routes::hierarchical_memory::search))
                     .route("/memory/index/status", get(crate::routes::hierarchical_memory::status))
                     .route("/memory/index/rebuild", axum::routing::post(crate::routes::hierarchical_memory::rebuild))

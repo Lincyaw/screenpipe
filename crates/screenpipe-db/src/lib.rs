@@ -45,6 +45,7 @@ pub use cancellable_query::{
     is_sqlite_interrupt, CancellableReadConnection, SqliteInterruptReason, SEARCH_QUERY_TIMEOUT,
     SQLITE_PROGRESS_CHECK_OPS,
 };
+pub use db::revoke_memory_exports_at;
 pub use db::{
     HierarchySummary, HierarchySummaryConfig, HierarchySummaryJob, HierarchySummaryCounts, SummaryCitation, SummaryCoverage, SummaryStatement, SummarySourceVersion,
     find_matching_a11y_positions, parse_all_text_positions, ActivityActionDraft,
@@ -52,7 +53,7 @@ pub use db::{
     ActivityIntervalRecord, ActivityLedgerObservation, ActivityTaskDraft, DatabaseManager,
     DeleteTimeRangeResult, ExplicitMemoryAnchor, ExplicitMemoryError, ExplicitMemoryImage,
     MemoryNode, MemoryEvidence, MemoryNodeDetail, MemoryTreeQuery, MemoryIndexJob,
-    MemoryIndexStatus, MemorySearchHit, MemoryNodeCorrection,
+    MemoryIndexStatus, MemoryProjectionCursor, MemorySearchHit, MemoryNodeCorrection,
     ExplicitMemoryMark, ExplicitMemoryQuery, ImmediateTx, NewExplicitMemoryMark,
     NewMeetingTranscriptSegment, MarkedCaptureOutcome, MarkedCaptureRequest, SemanticActor, SemanticActorAlias, SemanticActorReference,
     SemanticAttachResult, SemanticCleanupResult,

@@ -170,6 +170,12 @@ pub fn spawn(db: Arc<DatabaseManager>) -> Option<tokio::task::JoinHandle<()>> {
                 initialized = true;
             }
             if last_slide.elapsed() >= std::time::Duration::from_secs(120) {
+                if let Err(error) = db.maintain_memory_projection(offset).await {
+                    tracing::debug!(
+                        code = code(&error),
+                        "memory projection maintenance deferred"
+                    );
+                }
                 let now = DateTime::from_timestamp(Utc::now().timestamp() / 60 * 60, 0)
                     .unwrap_or_else(Utc::now);
                 let _ = db
@@ -230,11 +236,29 @@ async fn process(
         .map_err(|_| ExplicitMemoryError::Invalid("invalid_index_cursor".into()))?
         .with_timezone(&Utc);
     let mut end = (start + Duration::minutes(15)).min(job_end);
+    if let Some((end, complete)) = db.memory_projection_step(&job.id, start).await? {
+        return Ok(if complete { end } else { start });
+    }
     let policy = db.release_policy().await?;
     if (policy.text || policy.images) && !db.protected_reads_enabled() {
         return Err(ExplicitMemoryError::PrivacyChanged);
     }
     let epoch = db.memory_index_epoch().await?;
+    if job.id.starts_with("mark:") {
+        db.begin_memory_projection(
+            &job.id,
+            start,
+            start + Duration::days(1),
+            job.timezone_offset_minutes,
+            true,
+        )
+        .await?;
+        let (end, complete) = db
+            .memory_projection_step(&job.id, start)
+            .await?
+            .ok_or_else(|| ExplicitMemoryError::Invalid("memory_projection_missing".into()))?;
+        return Ok(if complete { end } else { start });
+    }
     let observations = loop {
         if screenpipe_core::background_work::is_suspended() {
             return Err(ExplicitMemoryError::Invalid("index_suspended".into()));
@@ -246,7 +270,7 @@ async fn process(
             Ok(rows) => break rows,
             Err(ExplicitMemoryError::Invalid(message))
                 if message == "memory_index_batch_too_dense"
-                    && end - start > Duration::seconds(1) =>
+                    && end - start > Duration::milliseconds(1) =>
             {
                 // Cursor persistence and SQLite date math use milliseconds.
                 // Keep adaptive boundaries on that same clock rather than
@@ -303,11 +327,11 @@ async fn process(
     if screenpipe_core::background_work::is_suspended() {
         return Err(ExplicitMemoryError::Invalid("index_suspended".into()));
     }
-    db.rebuild_memory_day(start, job.timezone_offset_minutes)
-        .await
-        .map_err(|error| {
-            diagnostic("project_day", &error);
-            error
-        })?;
-    Ok(end)
+    db.begin_memory_projection(&job.id, start, end, job.timezone_offset_minutes, false)
+        .await?;
+    let (end, complete) = db
+        .memory_projection_step(&job.id, start)
+        .await?
+        .ok_or_else(|| ExplicitMemoryError::Invalid("memory_projection_missing".into()))?;
+    Ok(if complete { end } else { start })
 }
