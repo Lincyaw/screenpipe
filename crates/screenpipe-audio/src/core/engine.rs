@@ -9,7 +9,6 @@ pub enum AudioTranscriptionEngine {
     Deepgram,
     WhisperTiny,
     WhisperTinyQuantized,
-    #[default]
     WhisperLargeV3Turbo,
     WhisperLargeV3TurboQuantized,
     WhisperLargeV3,
@@ -18,6 +17,7 @@ pub enum AudioTranscriptionEngine {
     Qwen3Asr,
     Parakeet,
     ParakeetMlx,
+    #[default]
     Disabled,
 }
 

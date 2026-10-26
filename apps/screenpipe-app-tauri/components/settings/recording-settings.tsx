@@ -207,7 +207,7 @@ const getAppIconUrl = (appName: string): string => {
   return `http://localhost:11435/app-icon?name=${encodeURIComponent(appName)}`;
 };
 
-const FALLBACK_TRANSCRIPTION_ENGINE = "whisper-large-v3-turbo-quantized";
+const FALLBACK_TRANSCRIPTION_ENGINE = "disabled";
 
 type OpenAICompatibleDraft = {
   endpoint: string;
@@ -295,9 +295,9 @@ const getAudioEngineResolution = (
 const getAudioFallbackMessage = (reason: AudioEngineFallbackReason) => {
   switch (reason) {
     case "notLoggedIn":
-      return "You are not logged in, so audio is being transcribed locally.";
+      return "Hosted transcription is unavailable. Audio capture continues without transcription.";
     case "missingDeepgramKey":
-      return "Deepgram has no API key configured, so audio is being transcribed locally.";
+      return "Deepgram has no API key configured. Audio capture continues without transcription.";
   }
 };
 
@@ -2144,7 +2144,7 @@ export function RecordingSettings({ section }: { section: RecordingSettingsSecti
       setPlatformReady(true);
       // Auto-migrate macOS users off qwen3-asr (CPU-only, no Metal support)
       if (currentPlatform === "macos" && settings.audioTranscriptionEngine === "qwen3-asr") {
-        handleSettingsChange({ audioTranscriptionEngine: "whisper-large-v3-turbo-quantized" }, true);
+        handleSettingsChange({ audioTranscriptionEngine: FALLBACK_TRANSCRIPTION_ENGINE }, true);
       }
     };
     checkPlatform();
@@ -2868,7 +2868,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                       variant="outline"
                       size="sm"
                       className="h-7 px-2 text-xs"
-                      data-testid="audio-engine-fallback-use-whisper"
+                      data-testid="audio-engine-fallback-capture-only"
                       onClick={() =>
                         handleSettingsChange(
                           { audioTranscriptionEngine: FALLBACK_TRANSCRIPTION_ENGINE },
@@ -2876,7 +2876,7 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
                         )
                       }
                     >
-                      Use Whisper setting
+                      Use capture only
                     </Button>
                   </div>
                 </AlertDescription>

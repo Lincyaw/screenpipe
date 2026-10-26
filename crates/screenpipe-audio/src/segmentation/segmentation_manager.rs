@@ -87,6 +87,13 @@ impl SegmentationManager {
         })
     }
 
+    /// Drop model sessions when processing is turned off; keep recorded audio intact.
+    pub async fn unload_models(&self) {
+        *self.embedding_extractor.lock().await = None;
+        *self.embedding_model_path.lock().await = None;
+        *self.segmentation_model_path.lock().await = None;
+    }
+
     /// Re-check model availability and initialize models if they become available.
     /// Returns true if readiness changed and handlers should restart.
     pub async fn refresh_models(&self) -> bool {

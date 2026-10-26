@@ -8,6 +8,22 @@ use std::time::Instant;
 const LOOKUP: &str = "SELECT id FROM _bulk_element_rows WHERE id IN (SELECT value FROM json_each('[1]')) ORDER BY id";
 const PLAN: &str = "EXPLAIN QUERY PLAN SELECT id FROM _bulk_element_rows WHERE id IN (SELECT value FROM json_each('[1]')) ORDER BY id";
 
+#[tokio::test]
+async fn read_cache_budget_preserves_recording_writer_cache() {
+    let (_root, db) = fixture().await;
+    let reader: i64 = sqlx::query_scalar("PRAGMA cache_size")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let writer: i64 = sqlx::query_scalar("PRAGMA cache_size")
+        .fetch_one(&db.write_pool)
+        .await
+        .unwrap();
+    assert_eq!(reader, -4_000);
+    assert_eq!(writer, -16_000);
+    db.close().await;
+}
+
 // Delay the actual SQLite ANALYZE preparation, after maintenance owns the
 // writer. This deterministically reproduces a slow operation without depending
 // on host disk speed or adding a production timing knob.

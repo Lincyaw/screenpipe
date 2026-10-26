@@ -2,6 +2,10 @@
 // https://screenpipe.com
 
 export default {
+  "Hosted transcription is unavailable. Audio capture continues without transcription.": "托管转写不可用，将继续录音，但不进行转写。",
+  "Deepgram has no API key configured. Audio capture continues without transcription.": "未配置 Deepgram API 密钥，将继续录音，但不进行转写。",
+  "Use capture only": "仅录音，不转写",
+
   "AI apps": "AI 应用",
   "None added": "尚未添加",
   "{count, number} active": "已启用 {count, number} 项",

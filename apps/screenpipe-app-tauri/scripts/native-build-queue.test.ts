@@ -10,6 +10,7 @@ import {
   formatDuration,
   mergeConfig,
   nativeTestCommand,
+  nativeMetalArgs,
   parseWorktreeList,
   sccacheHasBaseDirectories,
   stagePersistenceResources,
@@ -122,11 +123,18 @@ describe("native build queue helpers", () => {
     ])).toBe(true);
   });
 
+  test("enables Metal only for native macOS builds", () => {
+    expect(nativeMetalArgs("darwin")).toEqual(["--features", "metal"]);
+    expect(nativeMetalArgs("win32")).toEqual([]);
+    expect(nativeMetalArgs("linux")).toEqual([]);
+  });
+
   test("routes native tests through the debug-dev app manifest", () => {
     expect(nativeTestCommand(["--features", "e2e", "staged_update::"])).toEqual([
       "cargo", "test", "-p", "screenpipe-app",
       "--manifest-path", "src-tauri/Cargo.toml",
       "--profile", "debug-dev",
+      ...nativeMetalArgs(),
       "--features", "e2e", "staged_update::",
     ]);
   });

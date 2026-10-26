@@ -363,7 +363,6 @@ impl ServerCore {
         );
         info!("Starting server core on port {}", config.port);
         crate::health::set_boot_phase("starting", Some("starting server"));
-        let ai_gateway_url = crate::config::screenpipe_ai_gateway_url()?;
 
         // --- Environment setup ---
         std::env::set_var("SCREENPIPE_FD_LIMIT", "8192");
@@ -789,44 +788,9 @@ impl ServerCore {
         let pipes_dir = config.data_dir.join("pipes");
         std::fs::create_dir_all(&pipes_dir).ok();
 
-        // Share the cloud-token Arc between Server (for cloud_proxy.rs) and
-        // PiExecutor (for pi-agent provider auth). With one shared Arc the
-        // `set_cloud_token` Tauri command updates both readers in one shot,
-        // so a fresh sign-in or sign-out takes effect on the very next pipe
-        // run without restarting the engine.
-        let cloud_token_handle = server.cloud_token.clone();
-        let acp_gateway_url = ai_gateway_url.clone();
-        let pi_executor = Arc::new(
-            screenpipe_core::agents::pi::PiExecutor::with_shared_user_token(
-                cloud_token_handle.clone(),
-            )
-            .with_api_url(ai_gateway_url)
-            .with_api_auth_key(config.api_auth_key.clone()),
-        );
-        let mut agent_executors: std::collections::HashMap<
-            String,
-            Arc<dyn screenpipe_core::agents::AgentExecutor>,
-        > = std::collections::HashMap::new();
-        agent_executors.insert("pi".to_string(), pi_executor.clone());
-        agent_executors.insert(
-            "acp".to_string(),
-            Arc::new(
-                screenpipe_core::agents::acp::AcpExecutor::with_shared_user_token(
-                    cloud_token_handle.clone(),
-                    acp_gateway_url,
-                    config.port,
-                    config.api_auth_key.clone(),
-                ),
-            ),
-        );
-        let cloud_agent_executor = Arc::new(
-            screenpipe_core::agents::cloud::CloudAgentExecutor::new(
-                config.port,
-                config.api_auth_key.clone(),
-            )
-            .with_secret_store(server.secret_store.clone()),
-        );
-        agent_executors.insert("cloud-agent".to_string(), cloud_agent_executor);
+        // Context-only desktop: retain saved pipe records and retrieval APIs,
+        // without registering embedded AI executors or installing agent runtimes.
+        let agent_executors = std::collections::HashMap::new();
 
         let pipe_store: Option<Arc<dyn screenpipe_core::pipes::PipeStore>> = Some(Arc::new(
             screenpipe_engine::pipe_store::SqlitePipeStore::new(db.clone()),
@@ -877,9 +841,6 @@ impl ServerCore {
         // Inject local API key so pipe subprocesses can authenticate to localhost
         if config.api_auth {
             pipe_manager.set_local_api_key(config.api_auth_key.clone());
-        }
-        if let Err(error) = pipe_manager.install_summary_pipe() {
-            warn!("could not install the meeting summary conversion: {error}");
         }
         if let Err(e) = pipe_manager.load_pipes().await {
             warn!("failed to load pipes: {}", e);
@@ -1045,14 +1006,6 @@ impl ServerCore {
             .with_pipe_manager(shared_pipe_manager.clone())
             .with_mcp_session_access(mcp_session_access)
             .with_high_fps_controller(high_fps_controller.clone());
-
-        // Install pi agent in background
-        tokio::spawn(async move {
-            use screenpipe_core::agents::AgentExecutor;
-            if let Err(e) = pi_executor.ensure_installed().await {
-                warn!("pi agent install failed: {}", e);
-            }
-        });
 
         // Bind HTTP listener before returning (catches port conflicts early).
         // Retried: an engine restart can reach this bind while the previous

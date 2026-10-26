@@ -113,7 +113,8 @@ pub fn detect_tier() -> DeviceTier {
 pub struct DbConfig {
     /// SQLite `mmap_size` pragma in bytes.
     pub mmap_size: u64,
-    /// SQLite `cache_size` pragma in KiB (negative value = KiB).
+    /// SQLite cache budget in KiB: per write connection and shared across the
+    /// read pool. SQLite applies cache_size per connection, so readers divide it.
     pub cache_size_kb: u64,
     /// Max connections in the read pool.
     pub read_pool_max: u32,
@@ -124,20 +125,24 @@ pub struct DbConfig {
 }
 
 impl DbConfig {
+    pub fn read_cache_size_kb(&self) -> u64 {
+        self.cache_size_kb / u64::from(self.read_pool_max.max(2))
+    }
+
     /// Return the config for a given tier.
     pub fn for_tier(tier: DeviceTier) -> Self {
         match tier {
             DeviceTier::High => Self::default(),
             DeviceTier::Mid => Self {
-                mmap_size: 0,          // disabled — see DbConfig::default (prevents DB corruption)
-                cache_size_kb: 32_000, // 32 MB
+                mmap_size: 0,         // disabled — see DbConfig::default (prevents DB corruption)
+                cache_size_kb: 8_000, // 8 MB
                 read_pool_max: 12,
                 read_pool_min: 2,
                 write_pool_max: 6,
             },
             DeviceTier::Low => Self {
                 mmap_size: 0,         // disabled — see DbConfig::default (prevents DB corruption)
-                cache_size_kb: 8_000, // 8 MB
+                cache_size_kb: 4_000, // 4 MB
                 read_pool_max: 5,
                 read_pool_min: 1,
                 write_pool_max: 4,
@@ -147,7 +152,7 @@ impl DbConfig {
 }
 
 impl Default for DbConfig {
-    /// High-tier defaults — identical to the previous hardcoded values.
+    /// High-tier connection capacity, with a bounded background cache budget.
     fn default() -> Self {
         Self {
             // mmap disabled (0): memory-mapped I/O maps the DB file *writably*
@@ -158,7 +163,7 @@ impl Default for DbConfig {
             // page cache below is the safe default and the integrity win is
             // worth the small read-throughput cost for a capture product.
             mmap_size: 0,
-            cache_size_kb: 64_000, // 64 MB
+            cache_size_kb: 16_000, // 16 MB
             read_pool_max: 27,
             read_pool_min: 3,
             write_pool_max: 8,
@@ -432,10 +437,8 @@ pub fn apply_platform_defaults(settings: &mut RecordingSettings) {
 ///
 /// Called once on first launch after hardware detection. Adjusts capture
 /// aggressiveness based on what the hardware can handle comfortably.
-/// Also picks the best audio engine for the device tier and macOS version.
+/// Transcription stays opt-in; hardware detection preserves the selected engine.
 pub fn apply_tier_defaults(settings: &mut RecordingSettings, tier: DeviceTier) {
-    settings.audio_transcription_engine = best_engine_for_platform(tier).to_string();
-
     match tier {
         DeviceTier::High => {
             settings.video_quality = "balanced".to_string();
@@ -457,6 +460,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn read_cache_budget_does_not_multiply_with_pool_size() {
+        for tier in [DeviceTier::High, DeviceTier::Mid, DeviceTier::Low] {
+            let config = DbConfig::for_tier(tier);
+            assert!(
+                config.read_cache_size_kb() * u64::from(config.read_pool_max)
+                    <= config.cache_size_kb
+            );
+        }
+    }
+
+    #[test]
+    fn transcription_is_opt_in_and_tier_detection_preserves_selection() {
+        let mut settings = RecordingSettings::default();
+        assert_eq!(settings.audio_transcription_engine, "disabled");
+        assert!(!settings.disable_audio);
+        assert!(!settings.meeting_live_transcription_enabled);
+        settings.audio_transcription_engine = "whisper-tiny".into();
+        apply_tier_defaults(&mut settings, DeviceTier::High);
+        assert_eq!(settings.audio_transcription_engine, "whisper-tiny");
+    }
+
+    #[test]
     fn tier_round_trips() {
         for tier in [DeviceTier::High, DeviceTier::Mid, DeviceTier::Low] {
             assert_eq!(DeviceTier::from_str_loose(tier.as_str()), Some(tier));
@@ -469,7 +494,7 @@ mod tests {
         apply_tier_defaults(&mut settings, DeviceTier::Low);
         assert_eq!(settings.video_quality, "low");
         assert_eq!(settings.power_mode.as_deref(), Some("battery_saver"));
-        assert_eq!(settings.audio_transcription_engine, "whisper-tiny");
+        assert_eq!(settings.audio_transcription_engine, "disabled");
         assert!(settings.use_all_monitors);
         assert!(settings.monitor_ids.is_empty());
     }

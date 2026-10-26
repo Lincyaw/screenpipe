@@ -30,6 +30,93 @@ pub fn should_suppress_window(dormant: bool, allowed_while_dormant: bool) -> boo
     dormant && !allowed_while_dormant
 }
 
+pub(crate) fn should_release_closed_window(label: &str) -> bool {
+    matches!(label, "home" | "chat" | "search" | "permission-recovery")
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_keepalive(app: &AppHandle) -> Result<(), String> {
+    if app.get_window("headless-keepalive").is_none() {
+        tauri::window::WindowBuilder::new(app, "headless-keepalive")
+            .visible(false)
+            .skip_taskbar(true)
+            .build()
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Closing an ordinary UI surface releases its renderer, while capture, tray
+/// and annotation shortcuts keep running. Unlike headless mode this does not
+/// change recording/scheduler intent or unregister any shortcut.
+#[cfg(target_os = "macos")]
+pub(crate) fn release_closed_window(app: AppHandle, label: String) {
+    if !should_release_closed_window(&label) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        tokio::task::yield_now().await;
+        let app_for_main = app.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if let Err(error) = app.run_on_main_thread(move || {
+            let result = (|| -> Result<bool, String> {
+                let Some(window) = app_for_main.get_webview_window(&label) else {
+                    return Ok(false);
+                };
+                // A tray/shortcut reopen may win this deferred callback.
+                if window.is_visible().unwrap_or(true) {
+                    return Ok(false);
+                }
+                ensure_keepalive(&app_for_main)?;
+                prepare_window_for_destroy(&app_for_main, &label, &window)?;
+                window.destroy().map_err(|error| error.to_string())?;
+                crate::window::reset_to_regular_and_refresh_tray(&app_for_main);
+                info!(window = %label, "closed UI released; recording and shortcuts remain active");
+                Ok(!app_for_main
+                    .webview_windows()
+                    .values()
+                    .any(|window| window.is_visible().unwrap_or(true)))
+            })();
+            let _ = tx.send(result);
+        }) {
+            warn!("closed UI release could not run: {error}");
+            return;
+        }
+        match rx.await {
+            Ok(Ok(true)) => return_unused_ui_heap_pages(),
+            Ok(Err(error)) => warn!("closed UI release failed: {error}"),
+            _ => {}
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn return_unused_ui_heap_pages() {
+    static TRIMMING: AtomicBool = AtomicBool::new(false);
+    if TRIMMING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    tauri::async_runtime::spawn(async {
+        // Coalesce closures and let Swift/renderer destructors finish, without
+        // adding a permanent polling timer or touching the capture callback.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let _ = tokio::task::spawn_blocking(|| {
+            unsafe extern "C" {
+                fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+            }
+            // Apple's malloc.h: null selects all zones; zero asks to return
+            // already-free pages. In-use allocations are never invalidated.
+            let bytes = unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
+            info!(
+                released_bytes = bytes,
+                "unused UI heap pages returned to macOS"
+            );
+        })
+        .await;
+        TRIMMING.store(false, Ordering::Release);
+    });
+}
+
 fn preserve_window_during_dormancy(label: &str, onboarding_completed: bool) -> bool {
     label == "permission-recovery" || (label == "onboarding" && !onboarding_completed)
 }
@@ -77,6 +164,11 @@ pub(crate) fn prepare_window_for_destroy(
     use tauri_nspanel::{raw_nspanel::object_setClass, ManagerExt};
 
     let ns_window = window.ns_window().map_err(|error| error.to_string())? as id;
+    // Attached timelines keep a full day of metadata and decoded pixels. Drop
+    // only this host's controller, preserving other native timeline windows.
+    let json = serde_json::json!({"hostPointer": ns_window as usize}).to_string();
+    let _ = crate::native_timeline::detach(&json);
+
     let tao_window = Class::get("TaoWindow").ok_or("TaoWindow class is unavailable")?;
 
     unsafe {
@@ -136,6 +228,11 @@ pub async fn enter(app: AppHandle) -> Result<(), String> {
     if result.is_err() {
         UI_DORMANT.store(false, Ordering::SeqCst);
     }
+    #[cfg(target_os = "macos")]
+    if result.is_ok() && app.webview_windows().is_empty() {
+        return_unused_ui_heap_pages();
+    }
+
     result
 }
 
@@ -161,16 +258,10 @@ fn enter_on_main_thread(app: &AppHandle) -> Result<(), String> {
     }
 
     #[cfg(target_os = "macos")]
-    if app.get_window("headless-keepalive").is_none() {
-        if let Err(error) = tauri::window::WindowBuilder::new(app, "headless-keepalive")
-            .visible(false)
-            .skip_taskbar(true)
-            .build()
-        {
-            UI_DORMANT.store(false, Ordering::SeqCst);
-            warn!("headless: native keepalive creation failed; preserving webviews: {error}");
-            return Err(error.to_string());
-        }
+    if let Err(error) = ensure_keepalive(app) {
+        UI_DORMANT.store(false, Ordering::SeqCst);
+        warn!("headless: native keepalive creation failed; preserving webviews: {error}");
+        return Err(error);
     }
 
     #[cfg(target_os = "macos")]
@@ -276,6 +367,16 @@ mod tests {
         preserve_window_during_dormancy, should_start_dormant, should_suppress_pipe_runs,
         should_suppress_window,
     };
+
+    #[test]
+    fn ordinary_close_releases_renderers_without_closing_annotation_editors() {
+        assert!(super::should_release_closed_window("home"));
+        assert!(super::should_release_closed_window("search"));
+        assert!(super::should_release_closed_window("chat"));
+        assert!(super::should_release_closed_window("permission-recovery"));
+        assert!(!super::should_release_closed_window("annotation-capture"));
+        assert!(!super::should_release_closed_window("onboarding"));
+    }
 
     #[test]
     fn headless_startup_never_blocks_incomplete_onboarding() {

@@ -247,8 +247,11 @@ use tauri::{AppHandle, State};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{debug, error, info, warn};
 
-/// Signals that the background Pi install has finished (success or failure).
-static PI_INSTALL_DONE: AtomicBool = AtomicBool::new(false);
+// Legacy IPC handlers remain compatible with saved frontend routes, but this
+// context-only client never installs or launches embedded AI runtimes.
+fn require_embedded_agent() -> Result<(), String> {
+    Err("Embedded AI is disabled. Use an external agent through Screenpipe MCP.".into())
+}
 static REQUIRED_PI_PACKAGE_INSTALL_LOCK: std::sync::OnceLock<Mutex<()>> =
     std::sync::OnceLock::new();
 static PI_EXTENSION_SAFE_MODE_PROJECTS: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> =
@@ -2662,6 +2665,7 @@ pub async fn pi_start(
     user_token: Option<String>,
     provider_config: Option<PiProviderConfig>,
 ) -> Result<PiInfo, String> {
+    require_embedded_agent()?;
     let sid = session_id.unwrap_or_else(|| "chat".to_string());
     let coding_workspace = crate::coding_workspace::launch_for_session(&sid)?;
     pi_start_inner(
@@ -2690,6 +2694,7 @@ pub async fn pi_start_and_prompt(
     provider_config: Option<PiProviderConfig>,
     message: String,
 ) -> Result<String, String> {
+    require_embedded_agent()?;
     info!(
         "pi_start_and_prompt stage=requested session='{}'",
         session_id
@@ -2891,6 +2896,7 @@ pub async fn pi_start_inner(
     provider_config: Option<PiProviderConfig>,
     coding_workspace: Option<crate::coding_workspace::CodingWorkspaceLaunch>,
 ) -> Result<PiInfo, String> {
+    require_embedded_agent()?;
     info!("pi_start stage=requested session='{}'", session_id);
     if crate::search_only::is_active() {
         return Err("Open Screenpipe before starting an agent.".into());
@@ -3190,15 +3196,6 @@ pub async fn pi_start_inner(
         match find_pi_executable() {
             Some(p) => p,
             None => {
-                if !PI_INSTALL_DONE.load(Ordering::SeqCst) {
-                    info!("Pi not found yet, waiting for background install to finish...");
-                    for _ in 0..60 {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        if PI_INSTALL_DONE.load(Ordering::SeqCst) {
-                            break;
-                        }
-                    }
-                }
                 find_pi_executable()
                     .ok_or_else(|| {
                         let bun_found = find_bun_executable().is_some();
@@ -4881,11 +4878,7 @@ pub async fn pi_new_session(
 #[tauri::command]
 #[specta::specta]
 pub async fn pi_check() -> Result<PiCheckResult, String> {
-    let path = find_pi_executable();
-    Ok(PiCheckResult {
-        available: path.is_some(),
-        path,
-    })
+    Ok(PiCheckResult { available: false, path: None })
 }
 
 /// Locate the bundled bun binary so the frontend can write absolute-path
@@ -5016,6 +5009,7 @@ fn is_acp_preset_setup_progress(event: &Value) -> bool {
 #[tauri::command]
 #[specta::specta]
 pub async fn pi_acp_probe_agent(app: AppHandle, agent: AcpAgentConfig) -> Result<String, String> {
+    require_embedded_agent()?;
     let bun_path = find_bun_executable().ok_or("bun executable not found")?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let project_dir = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
@@ -5163,6 +5157,7 @@ pub fn pi_acp_agent_install_status(agent_id: String) -> AcpAgentInstallStatus {
 #[tauri::command]
 #[specta::specta]
 pub async fn pi_acp_agent_install(agent_id: String) -> Result<AcpAgentInstallStatus, String> {
+    require_embedded_agent()?;
     screenpipe_core::agents::acp::install_agent(&agent_id).await?;
     Ok(pi_acp_agent_install_status(agent_id))
 }
@@ -5173,6 +5168,7 @@ pub async fn pi_acp_agent_install(agent_id: String) -> Result<AcpAgentInstallSta
 #[tauri::command]
 #[specta::specta]
 pub async fn pi_acp_external_login(agent_id: String) -> Result<(), String> {
+    require_embedded_agent()?;
     let bun_path = find_bun_executable();
     screenpipe_core::agents::acp::run_external_auth_login(&agent_id, bun_path.as_deref()).await
 }
@@ -5541,6 +5537,7 @@ fn package_command_failure(action: &str, output: &Output) -> String {
 }
 
 fn ensure_pi_cli_for_package_command() -> Result<(String, String), String> {
+    require_embedded_agent()?;
     let bun = find_bun_executable().ok_or(
         "Could not find bundled bun. Restart screenpipe or reinstall the app before installing Pi extensions.",
     )?;
@@ -5866,32 +5863,8 @@ pub async fn pi_update_config(
 #[tauri::command]
 #[specta::specta]
 pub async fn pi_install(app: AppHandle) -> Result<(), String> {
-    info!("Installing pi via bun...");
-
-    let bun = find_bun_executable().ok_or("Could not find bun. Install from https://bun.sh")?;
-
-    let install_dir =
-        pi_local_install_dir().ok_or("Cannot determine home directory for Pi install")?;
-    std::fs::create_dir_all(&install_dir)
-        .map_err(|e| format!("Failed to create Pi install dir: {}", e))?;
-
-    let app_handle = app.clone();
-    std::thread::spawn(move || {
-        seed_pi_package_json(&install_dir);
-        match run_pi_package_install(&install_dir, &bun) {
-            Ok(()) => {
-                info!("Pi installed successfully");
-                let _ = app_handle.emit("pi_installed", true);
-            }
-            Err(e) => {
-                error!("Pi installation failed: {}", e);
-                set_pi_install_error(e);
-                let _ = app_handle.emit("pi_installed", false);
-            }
-        }
-    });
-
-    Ok(())
+    let _ = app;
+    require_embedded_agent()
 }
 
 /// Cleanup function to be called on app exit
@@ -5904,7 +5877,7 @@ pub async fn cleanup_pi(state: &PiState) {
     }
 }
 
-/// Find bun executable (shared by pi_install and ensure_pi_installed_background)
+/// Find bundled bun for external MCP configuration and non-agent integrations.
 pub(crate) fn find_bun_executable() -> Option<String> {
     // Pre-AVX2 CPU: the bundled/stock bun.exe requires AVX2 and dies with
     // 0xC000001D at spawn. Delegate to screenpipe-core, which waits for the
@@ -5956,244 +5929,6 @@ pub(crate) fn find_bun_executable() -> Option<String> {
         warn!("Bun not found in any checked path");
     }
     result
-}
-
-/// Background Pi installation — call once from app setup.
-/// Installs pi into `~/.screenpipe/pi-agent/` (local install, not global)
-/// so we fully control the dependency tree and avoid version conflicts.
-/// Runs on a dedicated thread, never panics, never blocks the caller.
-/// Sets `PI_INSTALL_DONE` when finished so `pi_start` can wait for it.
-/// Warm Bun's shared package cache with the latest published screenpipe-mcp so
-/// the first ACP session finds the core tools (activity-summary, search-content,
-/// update-memory) ready instead of cold-fetching them. A slow or failed
-/// `bun x screenpipe-mcp` fetch is why those tools sometimes never registered
-/// and the agent fell back to raw SQL. Best-effort and idempotent: once cached,
-/// `bun x` reuses it. Runs with stdin closed so the stdio server sees EOF and
-/// exits right after the download completes.
-fn prewarm_screenpipe_mcp(bun: &str) {
-    use std::process::Stdio;
-    let mut cmd = bun_command(bun);
-    cmd.arg("x")
-        .arg(screenpipe_core::agents::acp::SCREENPIPE_MCP_PKG)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    match cmd.spawn() {
-        Ok(mut child) => {
-            // The cache is populated during `bun x` resolution, which precedes
-            // running the server; bound the wait and kill if it lingers.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(status)) if status.success() => {
-                        info!(
-                            "screenpipe-mcp prewarm complete ({})",
-                            screenpipe_core::agents::acp::SCREENPIPE_MCP_PKG
-                        );
-                        break;
-                    }
-                    Ok(Some(status)) => {
-                        warn!("screenpipe-mcp prewarm exited with {status}");
-                        break;
-                    }
-                    Ok(None) if std::time::Instant::now() >= deadline => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        warn!("screenpipe-mcp prewarm timed out after 120s");
-                        break;
-                    }
-                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
-                    Err(error) => {
-                        warn!("screenpipe-mcp prewarm status check failed: {error}");
-                        break;
-                    }
-                }
-            }
-        }
-        Err(e) => warn!("screenpipe-mcp prewarm could not spawn bun: {}", e),
-    }
-}
-
-pub fn ensure_pi_installed_background() {
-    // Warm the screenpipe-mcp cache in the background so the first ACP session
-    // finds the core tools ready instead of cold-fetching them. Independent of
-    // the pi install below, which returns early on several paths.
-    if let Some(bun) = find_bun_executable() {
-        let _ = std::thread::Builder::new()
-            .name("screenpipe-mcp-prewarm".to_string())
-            .spawn(move || prewarm_screenpipe_mcp(&bun));
-    }
-
-    // On Windows, ensure bash is available early (downloads PortableGit if needed).
-    // This runs before Pi install so bash is ready by the time Pi starts,
-    // even if pi_start_inner is interrupted (e.g., by an app update).
-    #[cfg(windows)]
-    {
-        let _ = std::thread::Builder::new()
-            .name("bash-setup".to_string())
-            .spawn(|| {
-                screenpipe_core::agents::pi::ensure_bash_available();
-            });
-    }
-
-    // If Pi is already installed locally, check if it needs dependency fixes,
-    // a version upgrade, or a repair after a partial/interrupted install.
-    if find_local_pi_entrypoint().is_some() {
-        if let Some(install_dir) = pi_local_install_dir() {
-            if let Some(integrity_error) = local_pi_install_integrity_error(&install_dir) {
-                if let Some(bun) = find_bun_executable() {
-                    let _ = std::thread::Builder::new()
-                        .name("pi-repair".to_string())
-                        .spawn(move || {
-                            match repair_local_pi_install(&install_dir, &bun, &integrity_error) {
-                                Ok(()) => info!("Pi repair install successful"),
-                                Err(e) => {
-                                    error!("Pi repair install failed: {}", e);
-                                    set_pi_install_error(e);
-                                }
-                            }
-                            PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-                        });
-                } else {
-                    set_pi_install_error(format!(
-                        "Pi install is corrupt ({}) and bundled bun was not found",
-                        integrity_error
-                    ));
-                    PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-                }
-                return;
-            }
-
-            let pkg_path = install_dir.join("package.json");
-            let pkg_contents = pkg_path
-                .exists()
-                .then(|| std::fs::read_to_string(&pkg_path).ok())
-                .flatten()
-                .unwrap_or_default();
-            let needs_lru_fix = !pkg_contents.is_empty() && !pkg_contents.contains("overrides");
-            let needs_anthropic_sdk =
-                !pkg_contents.is_empty() && !pkg_contents.contains("@anthropic-ai/sdk");
-            let needs_upgrade = !is_local_pi_version_current(&install_dir);
-
-            if !needs_upgrade {
-                if let Err(error) = screenpipe_core::agents::pi_compaction::ensure(&install_dir) {
-                    set_pi_install_error(format!("Failed to prepare Pi compaction: {error}"));
-                    PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-                    return;
-                }
-            }
-
-            if needs_lru_fix || needs_anthropic_sdk || needs_upgrade {
-                if needs_lru_fix {
-                    info!("Pi installed but missing lru-cache overrides — patching");
-                }
-                if needs_anthropic_sdk {
-                    info!("Pi installed but missing @anthropic-ai/sdk dependency — patching");
-                }
-                if needs_upgrade {
-                    info!(
-                        "Pi version mismatch — upgrading to {} in background",
-                        PI_PACKAGE
-                    );
-                }
-                seed_pi_package_json(&install_dir);
-                // Drop bun.lock whenever ANY patch fires — a stale lockfile
-                // pins the resolved tree to the prior version graph, so a
-                // version bump without lockfile invalidation leaves bun
-                // reinstalling the same broken set.
-                if needs_lru_fix || needs_anthropic_sdk || needs_upgrade {
-                    let _ = std::fs::remove_file(install_dir.join("bun.lock"));
-                    let _ = std::fs::remove_file(install_dir.join("bun.lockb"));
-                }
-                // Run upgrade/reinstall in background but do NOT set PI_INSTALL_DONE
-                // until it completes — otherwise pi_start will launch the stale version
-                // while node_modules is being overwritten, causing import errors.
-                if let Some(bun) = find_bun_executable() {
-                    let _ = std::thread::Builder::new()
-                        .name("pi-upgrade".to_string())
-                        .spawn(move || {
-                            match run_pi_package_install(&install_dir, &bun) {
-                                Ok(()) => {
-                                    info!("Pi upgrade/fix: install successful");
-                                }
-                                Err(e) => {
-                                    error!("Pi upgrade/fix: install failed: {}", e);
-                                    set_pi_install_error(e);
-                                }
-                            }
-                            PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-                        });
-                } else {
-                    PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-                }
-            } else {
-                debug!("Pi already installed locally, skipping background install");
-                PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-            }
-        } else {
-            PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-        }
-        return;
-    }
-
-    match std::thread::Builder::new()
-        .name("pi-install".to_string())
-        .spawn(move || {
-            let result = std::panic::catch_unwind(|| {
-                let bun = match find_bun_executable() {
-                    Some(b) => b,
-                    None => {
-                        warn!("Bun not found at any known path, cannot install Pi. Checked: bundled exe dir, ~/.bun/bin/bun.exe, ~/AppData/Local/bun/bin/bun.exe");
-                        return;
-                    }
-                };
-
-                let install_dir = match pi_local_install_dir() {
-                    Some(d) => d,
-                    None => {
-                        warn!("Cannot determine home directory for Pi install");
-                        return;
-                    }
-                };
-
-                if let Err(e) = std::fs::create_dir_all(&install_dir) {
-                    warn!("Failed to create Pi install dir {}: {}", install_dir.display(), e);
-                    return;
-                }
-
-                info!(
-                    "Pi not found — installing into {} via bundled package manager",
-                    install_dir.display()
-                );
-
-                // Seed package.json with overrides to fix lru-cache resolution on Windows
-                seed_pi_package_json(&install_dir);
-
-                match run_pi_package_install(&install_dir, &bun) {
-                    Ok(()) => {
-                        info!("Pi installed successfully into {}", install_dir.display());
-                    }
-                    Err(e) => {
-                        error!("Pi background install failed: {}", e);
-                        set_pi_install_error(e);
-                    }
-                }
-            });
-
-            if let Err(e) = result {
-                error!("Pi background install panicked (non-fatal): {:?}", e);
-            }
-
-            // Always mark done, even on failure, so pi_start stops waiting
-            PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-        })
-    {
-        Ok(_) => { /* thread running */ }
-        Err(e) => {
-            error!("Failed to spawn pi-install thread (non-fatal): {}", e);
-            PI_INSTALL_DONE.store(true, Ordering::SeqCst);
-        }
-    }
 }
 
 #[cfg(test)]

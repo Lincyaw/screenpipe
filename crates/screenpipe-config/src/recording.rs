@@ -942,10 +942,9 @@ impl Default for RecordingSettings {
         Self {
             disable_audio: false,
             audio_capture_mode: default_audio_capture_mode(),
-            audio_transcription_engine: crate::best_engine_for_platform(crate::detect_tier())
-                .to_string(),
+            audio_transcription_engine: "disabled".to_string(),
             transcription_mode: "batch".to_string(),
-            meeting_live_transcription_enabled: true,
+            meeting_live_transcription_enabled: false,
             meeting_live_transcription_provider: "selected-engine".to_string(),
             audio_devices: vec![],
             use_system_default_audio: true,

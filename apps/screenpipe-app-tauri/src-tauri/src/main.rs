@@ -1046,8 +1046,8 @@ async fn main() {
                 }
                 // Onboarding and the annotation editor are disposable. Destroy their webviews so
                 // page effects (notably the live-feed search poller) are torn
-                // down as soon as the user closes the window. Other app
-                // windows stay warm for fast reopen and NSPanel safety.
+                // down as soon as the user closes the window. On macOS, the
+                // other surfaces use the deferred NSPanel-safe release below.
                 if !should_prevent_window_close(window.label()) {
                     info!("disposable window close requested — destroying webview");
                     return;
@@ -1065,6 +1065,15 @@ async fn main() {
                         .unwrap_or(false);
                 if enter_headless {
                     crate::headless::request_enter(window.app_handle().clone());
+                    return;
+                }
+
+                #[cfg(target_os = "macos")]
+                if crate::headless::should_release_closed_window(window.label()) {
+                    let _ = window.hide();
+                    crate::headless::release_closed_window(
+                        window.app_handle().clone(), window.label().to_string(),
+                    );
                     return;
                 }
 
@@ -1649,10 +1658,6 @@ async fn main() {
             #[cfg(feature = "e2e")]
             e2e::seeds::apply_onboarding(app.handle());
 
-            // Install Pi only after the shared authentication bootstrap has
-            // resolved and application initialization has begun.
-            crate::pi::ensure_pi_installed_background();
-
             // Escape hatch: SCREENPIPE_SKIP_ONBOARDING=1 marks onboarding complete
             // at startup so corp/VDI/headless environments (where the interactive
             // flow can't run) land at the main view. Persists to store so downstream
@@ -1681,31 +1686,24 @@ async fn main() {
             {
                 let store_for_download = store.clone();
                 tauri::async_runtime::spawn(async move {
-                    if store_for_download.recording.disable_audio {
-                        info!("audio disabled — skipping model pre-downloads");
+                    if store_for_download.recording.disable_audio
+                        || store_for_download.recording.audio_transcription_engine == "disabled"
+                    {
+                        info!("audio processing disabled — skipping model pre-downloads");
                         return;
                     }
-                    // Determine which whisper model the user's config needs
-                    let engine = match store_for_download.recording.audio_transcription_engine.as_str() {
-                        "deepgram" | "screenpipe-cloud" => None, // Cloud engines don't need local model
-                        // Non-whisper local engines (parakeet MLX, qwen3) download their own
-                        // models at load time — don't fetch the 834MB whisper file for them.
-                        // If the user later switches to a whisper engine, TranscriptionEngine::new
-                        // downloads it in the background ("will retry at server start").
-                        "disabled" | "parakeet" | "parakeet-tdt-0.6b-v2" | "parakeet-mlx"
-                        | "qwen3-asr" => None,
-                        _ => {
-                            use screenpipe_audio::core::engine::AudioTranscriptionEngine;
-                            Some(std::sync::Arc::new(match store_for_download.recording.audio_transcription_engine.as_str() {
-                                "whisper-tiny" => AudioTranscriptionEngine::WhisperTiny,
-                                "whisper-tiny-quantized" => AudioTranscriptionEngine::WhisperTinyQuantized,
-                                "whisper-large-v3" => AudioTranscriptionEngine::WhisperLargeV3,
-                                "whisper-large-v3-quantized" => AudioTranscriptionEngine::WhisperLargeV3Quantized,
-                                "whisper-large-v3-turbo" => AudioTranscriptionEngine::WhisperLargeV3Turbo,
-                                _ => AudioTranscriptionEngine::WhisperLargeV3TurboQuantized, // default
-                            }))
-                        }
-                    };
+                    // Only an explicit Whisper choice may pre-download its model.
+                    use screenpipe_audio::core::engine::AudioTranscriptionEngine;
+                    let selected = store_for_download.recording.audio_transcription_engine
+                        .parse::<AudioTranscriptionEngine>().unwrap_or_default();
+                    let engine = matches!(selected,
+                        AudioTranscriptionEngine::WhisperTiny
+                        | AudioTranscriptionEngine::WhisperTinyQuantized
+                        | AudioTranscriptionEngine::WhisperLargeV3
+                        | AudioTranscriptionEngine::WhisperLargeV3Quantized
+                        | AudioTranscriptionEngine::WhisperLargeV3Turbo
+                        | AudioTranscriptionEngine::WhisperLargeV3TurboQuantized
+                    ).then(|| std::sync::Arc::new(selected));
 
                     // Download whisper model (834MB default) — biggest download, start first.
                     // Skipped on non-AVX2 CPUs: whisper can never run there (the runtime
@@ -1808,56 +1806,8 @@ async fn main() {
                 let _ = ShowRewindWindow::Home { page: None }.show(&app.handle());
             }
 
-            // Pre-create chat panel (hidden) so the shortcut can show an
-            // existing panel on fullscreen Spaces. New windows created in
-            // Regular activation policy can't appear on fullscreen Spaces,
-            // but existing panels with MoveToActiveSpace + level 1001 can.
-            // The Chat creation path only configures level/behaviors — it
-            // does NOT activate or show, so no blink or focus-steal here.
-            // macOS-only: on Windows/Linux the non-macOS chat builder doesn't
-            // set .visible(false), causing a visible chat window on startup.
-            #[cfg(target_os = "macos")]
-            if onboarding_store.is_completed && !app_ui_hidden && !headless_startup {
-                let app_handle_chat = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    // Wait for main window to finish setup
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    if app_handle_chat.get_webview_window("chat").is_none() {
-                        info!("Pre-creating chat panel for fullscreen Space support");
-                        match ShowRewindWindow::Chat.show(&app_handle_chat) {
-                            Ok(_window) => {
-                                info!("Chat panel pre-created (hidden, panel configured)");
-                            }
-                            Err(e) => {
-                                warn!("Failed to pre-create chat panel: {}", e);
-                            }
-                        }
-                    }
-                });
-            }
-
-            // Pre-warm the floating search window (hidden, unfocused) so the
-            // FIRST search-shortcut press reuses a warm webview instead of
-            // cold-booting Next.js for ~5s (the "search frozen ~10s before you
-            // can type" bug). WebView2 can paint hidden transparent
-            // always-on-top windows during startup, so skip this on Windows.
-            #[cfg(not(target_os = "windows"))]
-            {
-                if onboarding_store.is_completed && !app_ui_hidden && !headless_startup {
-                    let app_handle_search = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        // Stagger after the chat pre-create (3s) so the two hidden
-                        // webviews don't cold-boot at the same instant as the main
-                        // window.
-                        tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
-                        if app_handle_search.get_webview_window("search").is_none() {
-                            if let Err(e) = ShowRewindWindow::prewarm_search(&app_handle_search) {
-                                warn!("failed to pre-warm search window: {}", e);
-                            }
-                        }
-                    });
-                }
-            }
+            // Auxiliary webviews are created only for an explicit open. A hidden
+            // Next.js page still owns a full WebContent heap and adds to idle RAM.
 
             // Pi is NOT auto-started at boot — it starts lazily when the user opens
             // the chat (standalone-chat.tsx calls pi_start). An idle watchdog in pi.rs

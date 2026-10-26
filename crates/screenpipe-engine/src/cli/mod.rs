@@ -82,13 +82,9 @@ pub enum CliAudioTranscriptionEngine {
     Disabled,
 }
 
-/// Use the same hardware, OS, and CPU defaults as the recording engine.
+/// Capture audio without loading a speech model unless explicitly selected.
 fn default_audio_engine() -> CliAudioTranscriptionEngine {
-    CliAudioTranscriptionEngine::from_str(
-        screenpipe_config::best_engine_for_platform(screenpipe_config::detect_tier()),
-        false,
-    )
-    .expect("the shared default audio engine must be supported by the CLI")
+    CliAudioTranscriptionEngine::Disabled
 }
 
 fn cli_engine_to_str(engine: &CliAudioTranscriptionEngine) -> &'static str {
@@ -1386,7 +1382,7 @@ impl RecordArgs {
             .and_then(screenpipe_config::DeviceTier::from_str_loose)
             .unwrap_or_else(screenpipe_config::detect_tier);
         if screenpipe_config::is_engine_unsafe(&settings.audio_transcription_engine, tier) {
-            let safe = screenpipe_config::best_engine_for_platform(tier);
+            let safe = "disabled";
             eprintln!(
                 "warning: {} is not supported on this platform, using {} instead",
                 settings.audio_transcription_engine, safe

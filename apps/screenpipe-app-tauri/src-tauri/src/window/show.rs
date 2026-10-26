@@ -1860,6 +1860,13 @@ impl ShowRewindWindow {
         #[cfg(target_os = "macos")]
         setup_content_process_handler(&window);
 
+        // Newly requested chat windows start hidden while their NSPanel is
+        // configured. Reuse the normal activation path on this first open too.
+        #[cfg(target_os = "macos")]
+        if matches!(self, Self::Chat) {
+            return self.show_with_search_origin_inner(app, search_origin);
+        }
+
         Ok(window)
     }
 
@@ -2124,12 +2131,9 @@ impl ShowRewindWindow {
         //     return Ok(());
         // }
 
-        // Search: hide instead of destroy so the webview stays warm. Recreating
-        // the window forces a full Next.js cold-boot on every open (the input is
-        // unresponsive for several seconds); reuse via show()'s existing-window
-        // branch makes reopen instant. `window.close()` on the class-swizzled
-        // NSPanel also risks a use-after-free SIGSEGV (see the creation path),
-        // which order_out avoids.
+        // Order out first to restore focus without NSPanel re-entrancy. On
+        // macOS release the hidden renderer after leaving this callback, using
+        // the same safe class restoration as the existing headless teardown.
         if id.label() == RewindWindowId::Search.label() {
             if let Some(window) = id.get(app) {
                 // Let the retained webview suspend its focus/search effects
@@ -2158,6 +2162,8 @@ impl ShowRewindWindow {
                     window.hide().ok();
                 }
             }
+            #[cfg(target_os = "macos")]
+            crate::headless::release_closed_window(app.clone(), id.label().to_string());
             return Ok(());
         }
 

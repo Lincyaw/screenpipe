@@ -319,7 +319,7 @@ impl RecordingConfig {
             enable_workflow_events: settings.enable_workflow_events,
             audio_transcription_engine: engine_str
                 .parse()
-                .unwrap_or(AudioTranscriptionEngine::WhisperLargeV3Turbo),
+                .unwrap_or_default(),
             transcription_mode: match settings.transcription_mode.as_str() {
                 "smart" | "batch" => TranscriptionMode::Batch,
                 _ => TranscriptionMode::Realtime,

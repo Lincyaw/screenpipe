@@ -15,7 +15,11 @@ fi
 rm -rf src-tauri/target/debug-dev/bundle
 
 # Build the bundle; the stable development identity is applied below.
-bun tauri build --bundles app -- --profile debug-dev
+BUILD_CONFIG_ARGS=()
+if [ -n "${SCREENPIPE_BUILD_CONFIG:-}" ]; then
+  BUILD_CONFIG_ARGS=(--config "$SCREENPIPE_BUILD_CONFIG")
+fi
+bun tauri build --bundles app --features metal "${BUILD_CONFIG_ARGS[@]}" -- --profile debug-dev
 
 # Strip extended attributes from all files in the bundle
 APP_PATH="src-tauri/target/debug-dev/bundle/macos/screenpipe.app"

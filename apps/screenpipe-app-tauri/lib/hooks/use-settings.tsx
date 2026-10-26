@@ -643,7 +643,7 @@ export function makeDefaultPresets(_isPro = false): AIPreset[] {
 	];
 }
 
-const DEFAULT_AUDIO_ENGINE = "whisper-large-v3-turbo-quantized";
+const DEFAULT_AUDIO_ENGINE = "disabled";
 
 let DEFAULT_SETTINGS: Settings = {
             uiLocale: "system",
@@ -662,8 +662,8 @@ let DEFAULT_SETTINGS: Settings = {
 			userId: "",
 			analyticsId: "",
 			devMode: false,
-			audioTranscriptionEngine: "whisper-large-v3-turbo-quantized",
-			meetingLiveTranscriptionEnabled: true,
+			audioTranscriptionEngine: DEFAULT_AUDIO_ENGINE,
+			meetingLiveTranscriptionEnabled: false,
 			meetingLiveTranscriptionProvider: "selected-engine",
 			appendTypedTextToMeetingNote: true,
 			ocrEngine: "default",
@@ -855,9 +855,7 @@ export function normalizePersonalSettings(settings: Settings): boolean {
 	assign("activitiesQuotaPause", null);
 	if (settings.piiBackend === "tinfoil") assign("piiBackend", "local");
 	if (settings.audioTranscriptionEngine === "screenpipe-cloud") {
-		let currentPlatform = settings.platform;
-		try { currentPlatform = platform(); } catch {}
-		assign("audioTranscriptionEngine", currentPlatform === "macos" ? DEFAULT_AUDIO_ENGINE : "parakeet");
+		assign("audioTranscriptionEngine", DEFAULT_AUDIO_ENGINE);
 	}
 	if (settings.meetingLiveTranscriptionProvider === "screenpipe-cloud") {
 		assign("meetingLiveTranscriptionProvider", "selected-engine");
@@ -1242,22 +1240,9 @@ function createSettingsStore() {
 			needsUpdate = true;
 		}
 
-		// Migration: Set default transcription engine (one-time only)
-		// - macOS → whisper-large-v3-turbo-quantized
-		// - Windows/Linux → parakeet
-		// Does NOT set screenpipe-cloud here because user may not be logged in yet.
-		// Cloud switch happens in account-section.tsx when subscription is confirmed.
+		// Retire the old hardware-based engine migration. Preserve explicit choices;
+		// new and missing settings already default to capture-only.
 		if (!(settings as any)._parakeetDefaultMigrationDone) {
-			const engine = settings.audioTranscriptionEngine;
-			const isWhisperVariant = engine?.includes("whisper");
-			if (isWhisperVariant || engine === "screenpipe-cloud" || engine === "parakeet") {
-				const { platform: getPlatform } = await import("@tauri-apps/plugin-os");
-				const os = getPlatform();
-				settings.audioTranscriptionEngine = os === "macos"
-					? "whisper-large-v3-turbo-quantized"
-					: "parakeet";
-				needsUpdate = true;
-			}
 			(settings as any)._parakeetDefaultMigrationDone = true;
 			needsUpdate = true;
 		}

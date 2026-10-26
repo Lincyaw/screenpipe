@@ -12,13 +12,13 @@ use async_trait::async_trait;
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
@@ -36,6 +36,206 @@ const MAX_BODY_LINES: usize = 5_000;
 /// newest first, and hitting this bound is reported as a search warning.
 const MAX_BODY_SCAN_FILES: usize = 250;
 const MAX_BROKER_REQUEST_BYTES: usize = 64 * 1024;
+
+// Input limits also bound huge image/tool-output JSON lines before serde allocates.
+const TRANSCRIPT_LIMIT_WARNING: &str = "transcript input limited to 2 MiB per file, 128 KiB per line, and 16 MiB per request; some content was skipped";
+const MAX_TRANSCRIPT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TRANSCRIPT_LINE_BYTES: usize = 128 * 1024;
+const MAX_CONTEXT_READ_BYTES: usize = 16 * 1024 * 1024;
+const MAX_TRANSCRIPT_CACHE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_TRANSCRIPT_CACHE_ENTRIES: usize = 64;
+
+struct TranscriptBudget {
+    remaining: usize,
+    truncated: bool,
+}
+
+impl TranscriptBudget {
+    fn new(remaining: usize) -> Self {
+        Self {
+            remaining,
+            truncated: false,
+        }
+    }
+}
+
+struct TranscriptLines<'a> {
+    reader: BufReader<File>,
+    budget: &'a mut TranscriptBudget,
+    remaining: usize,
+    lines: usize,
+    done: bool,
+}
+
+impl<'a> TranscriptLines<'a> {
+    fn new(file: File, budget: &'a mut TranscriptBudget) -> Self {
+        Self {
+            reader: BufReader::new(file),
+            budget,
+            remaining: MAX_TRANSCRIPT_BYTES,
+            lines: 0,
+            done: false,
+        }
+    }
+}
+
+impl Iterator for TranscriptLines<'_> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        while !self.done {
+            if self.lines >= MAX_BODY_LINES {
+                self.budget.truncated = true;
+                return None;
+            }
+            let mut line = Vec::new();
+            let mut oversized = false;
+            loop {
+                let available = match self.reader.fill_buf() {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        self.budget.truncated = true;
+                        self.done = true;
+                        return None;
+                    }
+                };
+                if available.is_empty() {
+                    self.done = true;
+                    break;
+                }
+                if self.remaining == 0 || self.budget.remaining == 0 {
+                    self.budget.truncated = true;
+                    self.done = true;
+                    return None;
+                }
+                let newline = available.iter().position(|byte| *byte == b'\n');
+                let count = newline
+                    .map_or(available.len(), |index| index + 1)
+                    .min(self.remaining)
+                    .min(self.budget.remaining);
+                if !oversized {
+                    if line.len() + count > MAX_TRANSCRIPT_LINE_BYTES {
+                        oversized = true;
+                        self.budget.truncated = true;
+                        line.clear();
+                    } else {
+                        line.extend_from_slice(&available[..count]);
+                    }
+                }
+                let complete = newline.is_some_and(|index| index < count);
+                self.reader.consume(count);
+                self.remaining -= count;
+                self.budget.remaining -= count;
+                if complete {
+                    break;
+                }
+            }
+            self.lines += 1;
+            if !oversized && !line.is_empty() {
+                if let Ok(line) = String::from_utf8(line) {
+                    return Some(line);
+                }
+                self.budget.truncated = true;
+            }
+        }
+        None
+    }
+}
+
+struct CachedTranscript {
+    path: PathBuf,
+    source: ChatSource,
+    stamp: (u64, Option<SystemTime>),
+    result: (ChatSearchResult, String),
+    truncated: bool,
+    touched: Instant,
+    bytes: usize,
+}
+
+fn transcript_cache() -> &'static Mutex<VecDeque<CachedTranscript>> {
+    static CACHE: OnceLock<Mutex<VecDeque<CachedTranscript>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn transcript_stamp(path: &Path) -> Result<(u64, Option<SystemTime>), String> {
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    Ok((metadata.len(), metadata.modified().ok()))
+}
+
+fn parse_transcript(
+    path: &Path,
+    source: ChatSource,
+    budget: &mut TranscriptBudget,
+) -> Result<(ChatSearchResult, String), String> {
+    // Stat before every hit: deleted or changed transcripts must not be served
+    // from a stale cache. No startup scan or unbounded background cache is needed.
+    let stamp = transcript_stamp(path);
+    {
+        let mut cache = transcript_cache()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        cache.retain(|entry| {
+            entry.touched.elapsed() < Duration::from_secs(30)
+                && (!(entry.path == path && entry.source == source)
+                    || stamp.as_ref().is_ok_and(|stamp| *stamp == entry.stamp))
+        });
+        if let Some(index) = cache
+            .iter()
+            .position(|entry| entry.path == path && entry.source == source)
+        {
+            let mut entry = cache.remove(index).unwrap();
+            entry.touched = Instant::now();
+            budget.truncated |= entry.truncated;
+            let result = entry.result.clone();
+            cache.push_back(entry);
+            return Ok(result);
+        }
+    }
+    let stamp = stamp?;
+    let mut file_budget = TranscriptBudget::new(budget.remaining);
+    let result = match source {
+        ChatSource::Codex => parse_codex_chat_uncached(path, &mut file_budget),
+        ChatSource::Claude => parse_claude_chat_uncached(path, &mut file_budget),
+        ChatSource::Cursor => parse_cursor_chat_uncached(path, &mut file_budget),
+        ChatSource::Gemini => parse_gemini_chat_uncached(path, &mut file_budget),
+        ChatSource::Screenpipe => return Err("external transcript source required".into()),
+    };
+    budget.remaining = file_budget.remaining;
+    budget.truncated |= file_budget.truncated;
+    let result = result?;
+    // A request-wide cutoff must not become a persistent short cache entry.
+    if file_budget.remaining > 0 && transcript_stamp(path).ok() == Some(stamp) {
+        let bytes = result.1.len()
+            + result.0.title.len()
+            + result.0.preview.len()
+            + result.0.id.len()
+            + result.0.workspace.as_ref().map_or(0, String::len)
+            + path.as_os_str().len()
+            + 512;
+        if bytes <= MAX_TRANSCRIPT_CACHE_BYTES {
+            let mut cache = transcript_cache()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            cache.retain(|entry| !(entry.path == path && entry.source == source));
+            while cache.len() >= MAX_TRANSCRIPT_CACHE_ENTRIES
+                || cache.iter().map(|entry| entry.bytes).sum::<usize>() + bytes
+                    > MAX_TRANSCRIPT_CACHE_BYTES
+            {
+                cache.pop_front();
+            }
+            cache.push_back(CachedTranscript {
+                path: path.to_path_buf(),
+                source,
+                stamp,
+                result: result.clone(),
+                truncated: file_budget.truncated,
+                touched: Instant::now(),
+                bytes,
+            });
+        }
+    }
+    Ok(result)
+}
 
 pub const CHAT_CONTROL_ADDR_ENV: &str = "SCREENPIPE_CHAT_CONTROL_ADDR";
 pub const CHAT_CONTROL_TOKEN_ENV: &str = "SCREENPIPE_CHAT_CONTROL_TOKEN";
@@ -434,30 +634,32 @@ fn search_local_transcripts(
     query: &str,
     limit: usize,
     is_transcript: fn(&Path) -> bool,
-    parse: fn(&Path) -> Result<(ChatSearchResult, String), String>,
+    source: ChatSource,
 ) -> Result<SourceSearch, String> {
     let mut search = SourceSearch::default();
     let mut scanned = 0usize;
+    let mut budget = TranscriptBudget::new(MAX_CONTEXT_READ_BYTES);
     for path in files {
         if !is_transcript(&path) {
             continue;
         }
-        if scanned >= MAX_BODY_SCAN_FILES {
+        if scanned >= MAX_BODY_SCAN_FILES || budget.remaining == 0 {
             search.truncated = true;
             break;
         }
         scanned += 1;
-        let Ok((result, body)) = parse(&path) else {
+        let Ok((result, body)) = parse_transcript(&path, source, &mut budget) else {
             continue;
         };
         if query_matches(&result, query, &body) {
             search.results.push(result);
             if search.results.len() >= limit {
-                search.truncated = false;
+                search.truncated = budget.truncated;
                 break;
             }
         }
     }
+    search.truncated |= budget.truncated;
     Ok(search)
 }
 
@@ -499,9 +701,20 @@ fn is_claude_bookkeeping(value: &Value) -> bool {
         || value.get("toolUseResult").is_some()
 }
 
+#[cfg(test)]
 fn parse_claude_chat(path: &Path) -> Result<(ChatSearchResult, String), String> {
+    parse_transcript(
+        path,
+        ChatSource::Claude,
+        &mut TranscriptBudget::new(MAX_TRANSCRIPT_BYTES),
+    )
+}
+
+fn parse_claude_chat_uncached(
+    path: &Path,
+    budget: &mut TranscriptBudget,
+) -> Result<(ChatSearchResult, String), String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
-    let reader = BufReader::new(file);
     let fallback_id = path
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -514,7 +727,7 @@ fn parse_claude_chat(path: &Path) -> Result<(ChatSearchResult, String), String> 
     let mut workspace = None;
     let mut updated_at = modified_ms(path);
 
-    for line in reader.lines().take(MAX_BODY_LINES).flatten() {
+    for line in TranscriptLines::new(file, budget) {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -584,7 +797,7 @@ fn search_claude(query: &str, limit: usize) -> Result<SourceSearch, String> {
         query,
         limit,
         |_| true,
-        parse_claude_chat,
+        ChatSource::Claude,
     )
 }
 
@@ -613,7 +826,19 @@ fn unwrap_cursor_text(text: &str) -> String {
     trimmed.to_string()
 }
 
+#[cfg(test)]
 fn parse_cursor_chat(path: &Path) -> Result<(ChatSearchResult, String), String> {
+    parse_transcript(
+        path,
+        ChatSource::Cursor,
+        &mut TranscriptBudget::new(MAX_TRANSCRIPT_BYTES),
+    )
+}
+
+fn parse_cursor_chat_uncached(
+    path: &Path,
+    budget: &mut TranscriptBudget,
+) -> Result<(ChatSearchResult, String), String> {
     let id = path
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -621,10 +846,9 @@ fn parse_cursor_chat(path: &Path) -> Result<(ChatSearchResult, String), String> 
         .ok_or_else(|| "missing Cursor chat id".to_string())?
         .to_string();
     let file = File::open(path).map_err(|error| error.to_string())?;
-    let reader = BufReader::new(file);
     let mut preview = String::new();
     let mut body = String::new();
-    for line in reader.lines().take(MAX_BODY_LINES).flatten() {
+    for line in TranscriptLines::new(file, budget) {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -679,7 +903,7 @@ fn search_cursor(query: &str, limit: usize) -> Result<SourceSearch, String> {
         query,
         limit,
         |path| path.to_string_lossy().contains("agent-transcripts"),
-        parse_cursor_chat,
+        ChatSource::Cursor,
     )
 }
 
@@ -701,9 +925,20 @@ fn gemini_message_text(message: &Value) -> String {
     }
 }
 
+#[cfg(test)]
 fn parse_gemini_chat(path: &Path) -> Result<(ChatSearchResult, String), String> {
+    parse_transcript(
+        path,
+        ChatSource::Gemini,
+        &mut TranscriptBudget::new(MAX_TRANSCRIPT_BYTES),
+    )
+}
+
+fn parse_gemini_chat_uncached(
+    path: &Path,
+    budget: &mut TranscriptBudget,
+) -> Result<(ChatSearchResult, String), String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
-    let reader = BufReader::new(file);
     let mut id = path
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -712,7 +947,7 @@ fn parse_gemini_chat(path: &Path) -> Result<(ChatSearchResult, String), String> 
     let mut updated_at = modified_ms(path);
     let mut messages: Vec<Value> = Vec::new();
 
-    for line in reader.lines().take(MAX_BODY_LINES).flatten() {
+    for line in TranscriptLines::new(file, budget) {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -793,7 +1028,7 @@ fn search_gemini(query: &str, limit: usize) -> Result<SourceSearch, String> {
                 .and_then(|parent| parent.file_name())
                 .is_some_and(|name| name == "chats")
         },
-        parse_gemini_chat,
+        ChatSource::Gemini,
     )
 }
 
@@ -899,7 +1134,8 @@ fn read_codex_transcript(files: &[PathBuf], id: &str) -> CodexTranscript {
     let Ok(file) = File::open(path) else {
         return transcript;
     };
-    for line in BufReader::new(file).lines().take(MAX_BODY_LINES).flatten() {
+    let mut budget = TranscriptBudget::new(MAX_TRANSCRIPT_BYTES);
+    for line in TranscriptLines::new(file, &mut budget) {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -952,14 +1188,26 @@ fn codex_id_from_file_name(path: &Path) -> Option<String> {
 /// text query can be answered from disk. The app server needs seconds to page
 /// through a large session history and only ever exposes thread metadata, so it
 /// is reserved for the recents list where its status and names are worth it.
+#[cfg(test)]
 fn parse_codex_chat(path: &Path) -> Result<(ChatSearchResult, String), String> {
+    parse_transcript(
+        path,
+        ChatSource::Codex,
+        &mut TranscriptBudget::new(MAX_TRANSCRIPT_BYTES),
+    )
+}
+
+fn parse_codex_chat_uncached(
+    path: &Path,
+    budget: &mut TranscriptBudget,
+) -> Result<(ChatSearchResult, String), String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
     let mut id = String::new();
     let mut workspace = None;
     let mut updated_at = modified_ms(path);
     let mut transcript = CodexTranscript::default();
 
-    for line in BufReader::new(file).lines().take(MAX_BODY_LINES).flatten() {
+    for line in TranscriptLines::new(file, budget) {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -1038,7 +1286,7 @@ async fn search_codex(query: &str, limit: usize) -> Result<SourceSearch, String>
                 &query,
                 limit,
                 |_| true,
-                parse_codex_chat,
+                ChatSource::Codex,
             )
         })
         .await
@@ -1220,9 +1468,19 @@ pub async fn session_context(
     .map(PathBuf::from)
     .map(Ok)
     .unwrap_or_else(home_dir)?;
-    tokio::task::spawn_blocking(move || session_context_in(&home, query, source, id, limit))
+    // Keep the permit inside the blocking worker: aborting an HTTP request must
+    // not release it while its filesystem scan is still running.
+    static SCAN: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+    let permit = tokio::time::timeout(Duration::from_secs(2), SCAN.acquire())
         .await
-        .map_err(|_| "session context reader failed".to_string())?
+        .map_err(|_| "session context reader busy; retry shortly".to_string())?
+        .map_err(|_| "session context reader unavailable".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        session_context_in(&home, query, source, id, limit)
+    })
+    .await
+    .map_err(|_| "session context reader failed".to_string())?
 }
 
 fn session_context_in(
@@ -1234,6 +1492,7 @@ fn session_context_in(
 ) -> Result<Value, String> {
     let mut results = Vec::new();
     let mut warnings = Vec::new();
+    let mut budget = TranscriptBudget::new(MAX_CONTEXT_READ_BYTES);
     for candidate in [
         ChatSource::Codex,
         ChatSource::Claude,
@@ -1268,13 +1527,30 @@ fn session_context_in(
             warnings.push(truncated_scan_warning(candidate));
         }
         for path in files.into_iter().take(cap) {
-            let parsed = match candidate {
-                ChatSource::Codex => parse_codex_chat(&path),
-                ChatSource::Claude => parse_claude_chat(&path),
-                ChatSource::Cursor => parse_cursor_chat(&path),
-                ChatSource::Gemini => parse_gemini_chat(&path),
-                ChatSource::Screenpipe => unreachable!(),
-            };
+            if let Some(id) = id.as_ref() {
+                let filename_id = match candidate {
+                    ChatSource::Codex => codex_id_from_file_name(&path),
+                    ChatSource::Cursor => path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .map(str::to_owned),
+                    _ => None,
+                };
+                if filename_id.is_some_and(|filename_id| filename_id != *id) {
+                    continue;
+                }
+            }
+            if budget.remaining == 0 {
+                break;
+            }
+            let parsed = parse_transcript(&path, candidate, &mut budget);
+            if budget.truncated
+                && !warnings
+                    .iter()
+                    .any(|warning| warning == TRANSCRIPT_LIMIT_WARNING)
+            {
+                warnings.push(TRANSCRIPT_LIMIT_WARNING.to_string());
+            }
             let Ok((mut summary, body)) = parsed else {
                 continue;
             };
@@ -1296,7 +1572,7 @@ fn session_context_in(
         return Err("session not found in the bounded local scan".into());
     }
     results.sort_by_key(|result| std::cmp::Reverse(result.updated_at));
-    let has_more = results.len() > limit.clamp(1, MAX_LIMIT);
+    let has_more = results.len() > limit.clamp(1, MAX_LIMIT) || budget.truncated;
     results.truncate(limit.clamp(1, MAX_LIMIT));
     Ok(
         json!({"results": results, "warnings": warnings, "has_more": has_more,
@@ -2007,6 +2283,59 @@ mod session_context_tests {
     use super::*;
 
     #[test]
+    fn transcript_input_limits_skip_large_lines_and_bound_total_reads() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("oversized.jsonl");
+        fs::write(
+            &path,
+            format!(
+                "{}\nsmall line\n",
+                "x".repeat(MAX_TRANSCRIPT_LINE_BYTES + 1)
+            ),
+        )
+        .unwrap();
+        let mut budget = TranscriptBudget::new(MAX_TRANSCRIPT_BYTES);
+        let lines: Vec<_> = TranscriptLines::new(File::open(&path).unwrap(), &mut budget).collect();
+        assert_eq!(lines, ["small line\n"]);
+        assert!(budget.truncated);
+
+        let mut budget = TranscriptBudget::new(1024);
+        assert!(
+            TranscriptLines::new(File::open(&path).unwrap(), &mut budget)
+                .next()
+                .is_none()
+        );
+        assert_eq!(budget.remaining, 0);
+        assert!(budget.truncated);
+    }
+
+    #[test]
+    fn transcript_cache_reuses_unchanged_files_and_invalidates_changes_and_deletion() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("cursor.jsonl");
+        fs::write(&path, "{\"role\":\"user\",\"content\":\"first\"}\n").unwrap();
+        let (_, first) = parse_cursor_chat(&path).unwrap();
+        let mut no_disk_budget = TranscriptBudget::new(0);
+        assert_eq!(
+            parse_transcript(&path, ChatSource::Cursor, &mut no_disk_budget)
+                .unwrap()
+                .1,
+            first
+        );
+        fs::write(
+            &path,
+            "{\"role\":\"user\",\"content\":\"changed content\"}\n",
+        )
+        .unwrap();
+        assert!(parse_cursor_chat(&path)
+            .unwrap()
+            .1
+            .contains("changed content"));
+        fs::remove_file(&path).unwrap();
+        assert!(parse_cursor_chat(&path).is_err());
+    }
+
+    #[test]
     fn session_context_search_and_read_are_historical() {
         let home = tempfile::tempdir().unwrap();
         let directory = home.path().join(".codex/sessions/2026/10/24");
@@ -2025,6 +2354,10 @@ mod session_context_tests {
             10,
         )
         .unwrap();
+        assert!(parse_codex_chat(&file)
+            .unwrap()
+            .1
+            .contains("Keep recordings durable"));
         assert_eq!(result["results"][0]["id"], "fixture-id");
         assert_eq!(result["results"][0]["can_send"], false);
         assert_eq!(result["results"][0]["state"], "recorded");

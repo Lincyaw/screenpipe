@@ -390,9 +390,13 @@ impl AudioManager {
                 "screenpipe-audio: macOS VoiceProcessingIO (AEC) enabled in settings (default input only)"
             );
         }
-        let segmentation_manager = Arc::new(SegmentationManager::new(options.is_disabled).await?);
+        let processing_disabled = options.is_disabled
+            || *options.transcription_engine == AudioTranscriptionEngine::Disabled;
+        let segmentation_manager = Arc::new(
+            SegmentationManager::new(processing_disabled || !options.enable_diarization).await?,
+        );
         let status = RwLock::new(AudioManagerStatus::Stopped);
-        let vad_engine: Arc<Mutex<Box<dyn VadEngine + Send>>> = if options.is_disabled {
+        let vad_engine: Arc<Mutex<Box<dyn VadEngine + Send>>> = if processing_disabled {
             Arc::new(Mutex::new(Box::new(WebRtcVad::new())))
         } else {
             match options.vad_engine {
@@ -518,6 +522,35 @@ impl AudioManager {
         // its configuration. Holding the same gate while updating options and
         // clearing the slot prevents an old build from publishing afterward.
         let _engine_build_guard = self.engine_builds.operation.lock().await;
+        let was_processing_disabled = {
+            let previous = self.options.read().await;
+            previous.is_disabled
+                || *previous.transcription_engine == AudioTranscriptionEngine::Disabled
+        };
+        if options.is_disabled
+            || *options.transcription_engine == AudioTranscriptionEngine::Disabled
+        {
+            // Capture does not need speech models. Release them on a settings
+            // restart too, rather than retaining a previous transcription session.
+            *self.vad_engine.lock().await = Box::new(WebRtcVad::new());
+            self.segmentation_manager.unload_models().await;
+        } else if was_processing_disabled {
+            // Restore the requested VAD when the user explicitly opts back in.
+            let vad: Box<dyn VadEngine + Send> = match options.vad_engine {
+                VadEngineEnum::Silero => match SileroVad::new().await {
+                    Ok(vad) => Box::new(vad),
+                    Err(error) => {
+                        warn!("silero vad unavailable, falling back to webrtc: {error}");
+                        Box::new(WebRtcVad::new())
+                    }
+                },
+                VadEngineEnum::WebRtc => Box::new(WebRtcVad::new()),
+            };
+            *self.vad_engine.lock().await = vad;
+        }
+        if !options.enable_diarization {
+            self.segmentation_manager.unload_models().await;
+        }
         *self.options.write().await = options;
         // Handler restarts can reuse a matching engine, but a full options
         // update must invalidate it: language, vocabulary, and provider
@@ -581,7 +614,9 @@ impl AudioManager {
         start_device_monitor(self_arc.clone(), self.device_manager.clone()).await?;
 
         // Seed known speakers from DB on startup
-        seed_speakers_from_db(&self.db, &self.segmentation_manager).await;
+        if *self.options.read().await.transcription_engine != AudioTranscriptionEngine::Disabled {
+            seed_speakers_from_db(&self.db, &self.segmentation_manager).await;
+        }
 
         // Subscribe to meeting events for calendar-assisted speaker diarization
         {
@@ -1700,6 +1735,13 @@ impl AudioManager {
                     None
                 };
 
+                // Capture-only stops here, after the existing durable writer.
+                // Do not run VAD, speaker extraction, or batch deferral for audio
+                // that the user has chosen not to transcribe.
+                if *audio_transcription_engine == AudioTranscriptionEngine::Disabled {
+                    continue;
+                }
+
                 // Meeting live transcription has its own provider/session path.
                 // While a live session is active, do not also run the same
                 // audio through the background STT path. The durable audio
@@ -2207,6 +2249,12 @@ impl AudioManager {
     /// downloads finish. Returns `true` when any runtime-capability state changed.
     pub async fn refresh_model_capabilities(&self) -> bool {
         let options = self.options.read().await;
+        if options.is_disabled
+            || *options.transcription_engine == AudioTranscriptionEngine::Disabled
+        {
+            return false;
+        }
+        let enable_diarization = options.enable_diarization;
         let audio_transcription_engine = options.transcription_engine.clone();
         let deepgram_config = options.deepgram_config.clone();
         let openai_compatible_config = options.openai_compatible_config.clone();
@@ -2301,7 +2349,8 @@ impl AudioManager {
             }
         }
 
-        let segmentation_changed = self.segmentation_manager.refresh_models().await;
+        let segmentation_changed =
+            enable_diarization && self.segmentation_manager.refresh_models().await;
         changed = changed || segmentation_changed;
 
         changed

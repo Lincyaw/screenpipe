@@ -346,7 +346,8 @@ impl DatabaseManager {
             #[cfg(not(target_os = "macos"))]
             let options = options.read_only(true);
             options
-        };
+        }
+        .pragma("cache_size", format!("-{}", config.read_cache_size_kb()));
 
         // Read pool: handles all SELECT queries (search, timeline, API, pipes).
         let read_pool_options = crate::storage::bulk::pool_options(storage.clone(), true)
@@ -360,6 +361,8 @@ impl DatabaseManager {
             } else {
                 config.read_pool_min
             })
+            // Release burst query connections and their page caches promptly.
+            .idle_timeout(Some(Duration::from_secs(60)))
             .acquire_timeout(Duration::from_secs(5));
         // An unpublished index has no readers yet. Defer their connections
         // until schema construction is complete, rather than letting their

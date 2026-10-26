@@ -79,11 +79,16 @@ export function sccacheHasBaseDirectories(output: string, worktrees: string[]): 
   });
 }
 
+export function nativeMetalArgs(host: string = process.platform): string[] {
+  return host === "darwin" ? ["--features", "metal"] : [];
+}
+
 export function nativeTestCommand(args: string[]): string[] {
   return [
     "cargo", "test", "-p", "screenpipe-app",
     "--manifest-path", "src-tauri/Cargo.toml",
     "--profile", "debug-dev",
+    ...nativeMetalArgs(),
     ...args,
   ];
 }
@@ -410,12 +415,13 @@ async function perform(mode: BuildMode, args: string[]): Promise<number> {
   const env = localSccacheEnvironment();
   switch (mode) {
     case "build":
-      return run(["bun", "tauri", "build", "--no-bundle", "--", "--profile", "debug-dev"], env);
+      return run(["bun", "tauri", "build", "--no-bundle", ...nativeMetalArgs(), "--", "--profile", "debug-dev"], env);
     case "e2e":
       env.NEXT_PUBLIC_SCREENPIPE_E2E = "true";
       return run([
-        "bun", "tauri", "build", "--verbose", "--no-bundle", "--",
-        "--profile", "debug-dev", "--features", "e2e",
+        "bun", "tauri", "build", "--verbose", "--no-bundle",
+        "--features", process.platform === "darwin" ? "e2e,metal" : "e2e",
+        "--", "--profile", "debug-dev",
       ], env);
     case "signed":
       return run(["bash", "scripts/build_macos.sh", "--queue-held"], env);
@@ -553,7 +559,7 @@ async function perform(mode: BuildMode, args: string[]): Promise<number> {
       exitCode = await run([
         "cargo", "build", "--manifest-path", "src-tauri/Cargo.toml",
         "--profile", "debug-dev", "--no-default-features", "--features",
-        "qwen3-asr,parakeet", "--bin", "screenpipe-app",
+        (process.platform === "darwin" ? "qwen3-asr,parakeet,metal" : "qwen3-asr,parakeet"), "--bin", "screenpipe-app",
       ], env);
       return exitCode;
     }
@@ -683,7 +689,7 @@ async function main(): Promise<number> {
     console.log("[native-build-queue] warm-up complete; build slot released for the live dev session");
     const env = localSccacheEnvironment();
     env.SCREENPIPE_NATIVE_PREBUILD_COMPLETE = "1";
-    return run(["bun", "tauri", "dev", "--", "--profile", "debug-dev"], env);
+    return run(["bun", "tauri", "dev", ...nativeMetalArgs(), "--", "--profile", "debug-dev"], env);
   }
   if ([
     "build",

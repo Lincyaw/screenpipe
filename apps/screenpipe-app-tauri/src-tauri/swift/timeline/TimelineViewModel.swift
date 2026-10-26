@@ -52,11 +52,17 @@ actor FrameImageLoader {
     private let rest: TimelineRESTClient
     private var failedChunks: [String: Date] = [:]
     private var calibratedFPS: [String: Double] = [:]
-    private var cache: [String: NSImage] = [:]
+    private struct CachedImage {
+        let image: NSImage
+        let bytes: Int
+    }
+    private var cache: [String: CachedImage] = [:]
     private var cacheOrder: [String] = []
+    private var cacheBytes = 0
 
     static let failedChunkTTL: TimeInterval = 30
-    static let cacheLimit = 40
+    static let cacheLimit = 6
+    static let cacheByteLimit = 16 * 1024 * 1024
 
     init(rest: TimelineRESTClient) {
         self.rest = rest
@@ -67,7 +73,11 @@ actor FrameImageLoader {
         guard frame.devices.indices.contains(deviceIndex) else { return nil }
         let device = frame.devices[deviceIndex]
         let key = "\(device.frameId)@\(frame.timestamp)"
-        if let cached = cache[key] { return cached }
+        if let cached = cache[key] {
+            cacheOrder.removeAll { $0 == key }
+            cacheOrder.append(key)
+            return cached.image
+        }
 
         var image: NSImage?
         switch FrameImageSource.resolve(for: frame, deviceIndex: deviceIndex) {
@@ -190,12 +200,33 @@ actor FrameImageLoader {
     }
 
     private func store(_ image: NSImage, for key: String) {
-        if cache[key] == nil { cacheOrder.append(key) }
-        cache[key] = image
-        while cacheOrder.count > Self.cacheLimit {
+        // Count decoded pixels, not compressed JPEG bytes or a fixed number of
+        // frames. Inspect representations without forcing another image decode.
+        let estimated = image.representations.map {
+            Double($0.pixelsWide) * Double($0.pixelsHigh) * 4
+        }.max() ?? (Double(image.size.width) * Double(image.size.height) * 16)
+        // A large frame can still be displayed as currentImage; it simply does
+        // not also live in the history cache.
+        guard estimated.isFinite, estimated > 0,
+              estimated <= Double(Self.cacheByteLimit) else { return }
+        if let previous = cache.removeValue(forKey: key) { cacheBytes -= previous.bytes }
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
+        let bytes = Int(estimated.rounded(.up))
+        cache[key] = CachedImage(image: image, bytes: bytes)
+        cacheBytes += bytes
+        while cacheOrder.count > Self.cacheLimit || cacheBytes > Self.cacheByteLimit {
             let evicted = cacheOrder.removeFirst()
-            cache[evicted] = nil
+            if let removed = cache.removeValue(forKey: evicted) { cacheBytes -= removed.bytes }
         }
+    }
+
+    func purgeCache() {
+        cache.removeAll()
+        cacheOrder.removeAll()
+        cacheBytes = 0
+        failedChunks.removeAll()
+        calibratedFPS.removeAll()
     }
 }
 
@@ -471,6 +502,9 @@ final class TimelineViewModel: ObservableObject {
         pendingAdjacentAnchor = nil
         pendingDayAnchor = nil
         isLoadingImage = false
+        currentImage = nil
+        currentImageFrameId = nil
+        Task { [images] in await images.purgeCache() }
     }
 
     /// Rebind an already-mounted native timeline to the API configuration the
