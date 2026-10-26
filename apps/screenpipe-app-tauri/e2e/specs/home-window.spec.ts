@@ -69,28 +69,4 @@ describe('Home window', () => {
     }
   });
 
-  it('hides recording status while the sidebar is collapsed', async () => {
-    await openHomeWindow();
-
-    const recordingStatus = await $('[data-testid="recording-status-trigger"]');
-    await recordingStatus.waitForExist({ timeout: t(10000) });
-
-    const collapseSidebar = await $('[aria-label="collapse sidebar"]');
-    await collapseSidebar.click();
-
-    await recordingStatus.waitForExist({
-      reverse: true,
-      timeout: t(5000),
-    });
-    const expandSidebar = await $('[aria-label="expand sidebar"]');
-    await expandSidebar.waitForExist({ timeout: t(5000) });
-
-    const filepath = await saveScreenshot('home-sidebar-collapsed');
-    expect(existsSync(filepath)).toBe(true);
-
-    await expandSidebar.click();
-    await (await $('[data-testid="recording-status-trigger"]')).waitForExist({
-      timeout: t(5000),
-    });
-  });
 });

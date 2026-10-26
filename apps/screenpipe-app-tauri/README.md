@@ -26,9 +26,7 @@ production components with fictional fixtures and is blank outside mock mode.
 Consumer onboarding shows the first-task choice after recommended setup. Managed
 deployments and the summary-first activation experiment keep their existing flow.
 
-Mac shortcuts: `Cmd+B` toggles navigation; `Option+Cmd+B` toggles the assistant.
-Windows/Linux use `Ctrl+B` and `Ctrl+Alt+B`. Switching modes keeps both chat
-components mounted, but only the visible workspace handles its shortcuts.
+The navigation sidebar stays visible; it has no collapse button or shortcut.
 
 ## Cloud workflows in desktop
 

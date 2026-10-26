@@ -5,7 +5,7 @@
 
 import React, { useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Brain, CalendarClock, Keyboard, ListTree, MessageSquare, MonitorPlay, PanelLeft, Pause, Play, Plug, Search, Settings as SettingsIcon, TimerReset } from "lucide-react";
+import { Brain, CalendarClock, Keyboard, ListTree, MessageSquare, MonitorPlay, Pause, Play, Plug, Search, Settings as SettingsIcon, TimerReset } from "lucide-react";
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "@/components/ui/command";
 import { ShortcutKeycap } from "@/components/shortcut-keycap";
 import { useSettings } from "@/lib/hooks/use-settings";
@@ -36,7 +36,6 @@ export interface CommandPaletteDeps {
   pauseRecording: () => void;
   resumeRecording: () => void;
   goToSection: (id: SidebarNavId) => void;
-  toggleSidebar: () => void;
   openShortcutGuide: () => void;
   openSettings: (section?: string) => void;
   /** sidebar sections currently available (policy + timeline-disabled aware) */
@@ -132,15 +131,6 @@ export function buildPaletteEntries(
       icon: SECTION_ICONS[section.id],
       run: () => deps.goToSection(section.id),
     })),
-    {
-      id: "toggle_sidebar",
-      label: "Toggle sidebar",
-      keywords: "collapse expand panel",
-      group: "settings",
-      hint: inAppShortcutLabel("toggle_sidebar", isMac),
-      icon: PanelLeft,
-      run: deps.toggleSidebar,
-    },
     {
       id: "open_settings",
       label: "Open settings",

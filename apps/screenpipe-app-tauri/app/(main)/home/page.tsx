@@ -5,7 +5,7 @@
 
 
 import React, { useEffect, useState, useRef, Suspense, useCallback } from "react";
-import { Brain, MonitorPlay, PanelLeftClose, PanelLeftOpen, Search, Plug, CalendarClock, ListTree, ArrowLeft } from "lucide-react";
+import { Brain, MonitorPlay, Search, Plug, CalendarClock, ListTree, ArrowLeft } from "lucide-react";
 import { emit } from "@tauri-apps/api/event";
 
 
@@ -63,7 +63,7 @@ import { ShortcutKeycap } from "@/components/shortcut-keycap";
 import { ExperimentalShortcutGuide } from "@/components/shortcut-guide";
 import { commandPalette as commandPaletteAnalytics } from "@/lib/analytics/command-palette";
 import { useExperimentalFeaturesEnabled } from "@/lib/experimental-features";
-import { inAppShortcutLabel, matchesInAppShortcut } from "@/lib/shortcuts";
+import { matchesInAppShortcut } from "@/lib/shortcuts";
 
 
 
@@ -185,66 +185,6 @@ function HomeContent() {
       setActiveSection("home", { history: "replace" });
     }
   }, [settings.disableTimeline, activeSection, setActiveSection]);
-
-  // Sidebar collapse state (persisted in localStorage)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-
-  useEffect(() => {
-    const stored = localStorage.getItem("sidebar-collapsed");
-    if (stored === "true") setSidebarCollapsed(true);
-  }, []);
-
-  const toggleSidebar = useCallback(() => {
-    setSidebarCollapsed((prev) => {
-      const next = !prev;
-      localStorage.setItem("sidebar-collapsed", String(next));
-      return next;
-    });
-  }, []);
-
-  // Ephemeral collapse for focused workflows (e.g. taking notes during
-  // a meeting). Captures the user's prior sidebar state on enter and
-  // restores it on exit — never persisted to localStorage.
-  //
-  // Stable identity (no deps) so this callback doesn't re-fire the
-  // child's notify-effect every time `sidebarCollapsed` flips. The prior
-  // version had `[sidebarCollapsed]` in its deps, which meant: user
-  // hits Cmd+B in focused-meeting mode → setSidebarCollapsed(false) →
-  // callback recreated → child's "notify on selectedId/onFocusModeChange"
-  // effect re-ran with selectedId still set → setSidebarCollapsed(true).
-  // Net effect: the sidebar slammed shut every time the user tried to
-  // open it during a meeting.
-  const sidebarPrevCollapsedRef = useRef<boolean | null>(null);
-  // Assigned during render (not in an effect): read only from the meeting
-  // focus-mode handler below, never during render.
-  const sidebarCollapsedRef = useRef(sidebarCollapsed);
-  sidebarCollapsedRef.current = sidebarCollapsed;
-  const handleMeetingFocusModeChange = useCallback(
-    (focused: boolean) => {
-      if (focused) {
-        if (sidebarPrevCollapsedRef.current === null) {
-          sidebarPrevCollapsedRef.current = sidebarCollapsedRef.current;
-        }
-        setSidebarCollapsed(true);
-      } else if (sidebarPrevCollapsedRef.current !== null) {
-        const prev = sidebarPrevCollapsedRef.current;
-        sidebarPrevCollapsedRef.current = null;
-        setSidebarCollapsed(prev);
-      }
-    },
-    [],
-  );
-
-  // Cmd+B / Ctrl+B to toggle sidebar
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!matchesInAppShortcut(e, "toggle_sidebar", isMac)) return;
-      e.preventDefault();
-      toggleSidebar();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [isMac, toggleSidebar]);
 
   // Own portal-only shortcut surfaces in the hydrated Home shell. Static
   // WKWebView exports can otherwise defer a closed dialog subtree long enough
@@ -731,7 +671,6 @@ function HomeContent() {
             meetingState={meetingState}
             meetingLoading={meetingLoading}
             onToggleMeeting={toggleMeeting}
-            onFocusModeChange={handleMeetingFocusModeChange}
             captureDevices={recordingDevices}
             onCaptureDevicesRefresh={refreshRecordingDevices}
           />
@@ -886,10 +825,7 @@ function HomeContent() {
           page binds its own ⌘K for search focus while mounted. */}
       <StarredTimeline />
       {/* Routes actions the native timeline window cannot perform itself. */}
-      <NativeTimelineBridge
-        onReturnToActivity={returnToActivity}
-        onToggleSidebar={toggleSidebar}
-      />
+      <NativeTimelineBridge onReturnToActivity={returnToActivity} />
 
       <CommandPalette
         open={commandPaletteOpen}
@@ -911,7 +847,6 @@ function HomeContent() {
           goToSection: (id) => {
             void setActiveSection(id);
           },
-          toggleSidebar,
           openShortcutGuide: () => setShortcutGuideOpen(true),
           openSettings,
           sections: availableSidebarIds.map((id) => ({
@@ -925,12 +860,9 @@ function HomeContent() {
           {/* Sidebar */}
           <TooltipProvider delayDuration={400}>
           {/* Top-left chrome strip — pinned next to the macOS traffic
-              lights: sidebar toggle, search, meetings and recording-status dot.
-              No wordmark, no header row (Claude / Codex style). When
-              the sidebar is collapsed it is hidden entirely and the
-              strip floats over the content, reduced to the sidebar
-              toggle. The persistent main shell owns dragging in blank parts
-              of this top band and excludes these controls. Fixed
+              lights: search, navigation options, meetings and recording status.
+              The sidebar stays visible. The persistent main shell owns
+              dragging in blank parts of this top band and excludes these controls. Fixed
               positioning anchors the strip to the viewport so it isn't
               clipped by AppSidebar's overflow. The notification bell
               lives in the Pipes view header (pipe-store.tsx) since
@@ -944,35 +876,7 @@ function HomeContent() {
               reserveTrafficLights ? "left-[78px]" : "left-2"
             )}
           >
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={toggleSidebar}
-                  aria-label={sidebarCollapsed ? ui("Expand sidebar") : ui("Collapse sidebar")}
-                  data-announcement-anchor="top-sidebar-toggle"
-                  className={cn(
-                    "p-1 rounded-md transition-colors",
-                    sidebarCollapsed && activeSection === "timeline"
-                      ? "backdrop-blur-sm bg-background/80 shadow-sm text-muted-foreground hover:text-foreground hover:bg-background"
-                      : isTranslucent ? "vibrant-nav-item" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                  )}
-                >
-                  {sidebarCollapsed
-                    ? <PanelLeftOpen className="h-3.5 w-3.5" />
-                    : <PanelLeftClose className="h-3.5 w-3.5" />}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                <span className="flex items-center gap-2">
-                  {sidebarCollapsed ? ui("Expand sidebar") : ui("Collapse sidebar")}
-                  <ShortcutKeycap>
-                    {inAppShortcutLabel("toggle_sidebar", isMac)}
-                  </ShortcutKeycap>
-                </span>
-              </TooltipContent>
-            </Tooltip>
-
-            {!sidebarCollapsed && experimentalFeaturesEnabled && (
+            {experimentalFeaturesEnabled && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -1003,29 +907,26 @@ function HomeContent() {
               </Tooltip>
             )}
 
-            {!sidebarCollapsed && (
-              <SidebarCustomizationMenu
-                hiddenItems={hiddenSidebarIds.map((id) => ({
-                  id,
-                  label: SIDEBAR_SECTION_DEFS[id]!.label,
-                }))}
-                isTranslucent={isTranslucent}
-                canReset={!isSidebarNavLayoutDefault(sidebarLayout)}
-                onSetHidden={(id, hidden) => {
-                  persistSidebarLayout(
-                    setSidebarNavItemHidden(
-                      sidebarLayout,
-                      availableSidebarIds,
-                      id,
-                      hidden,
-                    ),
-                  );
-                }}
-                onReset={() => persistSidebarLayout(DEFAULT_SIDEBAR_NAV_LAYOUT)}
-              />
-            )}
-
-            {!sidebarCollapsed && meetingsInToolbar && (
+            <SidebarCustomizationMenu
+              hiddenItems={hiddenSidebarIds.map((id) => ({
+                id,
+                label: SIDEBAR_SECTION_DEFS[id]!.label,
+              }))}
+              isTranslucent={isTranslucent}
+              canReset={!isSidebarNavLayoutDefault(sidebarLayout)}
+              onSetHidden={(id, hidden) => {
+                persistSidebarLayout(
+                  setSidebarNavItemHidden(
+                    sidebarLayout,
+                    availableSidebarIds,
+                    id,
+                    hidden,
+                  ),
+                );
+              }}
+              onReset={() => persistSidebarLayout(DEFAULT_SIDEBAR_NAV_LAYOUT)}
+            />
+            {meetingsInToolbar && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -1063,15 +964,9 @@ function HomeContent() {
               </Tooltip>
             )}
 
-            {!sidebarCollapsed && (
-              <RecordingStatus {...recordingStatusProps} isTranslucent={isTranslucent} />
-            )}
+            <RecordingStatus {...recordingStatusProps} isTranslucent={isTranslucent} />
           </div>
 
-          {/* Collapsed = hidden. No icon-rail fallback — the floating
-              sidebar toggle above is the entire collapsed chrome,
-              Claude-style. */}
-          {!sidebarCollapsed && (
           <AppSidebar className="pl-1">
             {/* Navigation.
                 Outer flex column has no overflow — the chat-list section
@@ -1125,7 +1020,6 @@ function HomeContent() {
                 isTranslucent={isTranslucent} hideHelp={isSectionHidden("help")} helpActive={activeSection === "help"} />
             </div>
           </AppSidebar>
-          )}
           </TooltipProvider>
 
           {/* Content.

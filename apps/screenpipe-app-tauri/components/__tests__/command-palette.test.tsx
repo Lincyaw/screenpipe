@@ -68,7 +68,6 @@ function makeDeps(overrides: Partial<CommandPaletteDeps> = {}): CommandPaletteDe
     pauseRecording: vi.fn(),
     resumeRecording: vi.fn(),
     goToSection: vi.fn(),
-    toggleSidebar: vi.fn(),
     openShortcutGuide: vi.fn(),
     openSettings: vi.fn(),
     sections: [
@@ -144,9 +143,9 @@ describe("buildPaletteEntries", () => {
   });
 
   it("uses word-form hints for in-app chords off macOS", () => {
-    const entries = buildPaletteEntries(makeDeps(), mocks.settings, false);
+    const entries = buildPaletteEntries(makeDeps(), mocks.settings, false, true);
     expect(entries.some((e) => e.id === "new_chat")).toBe(false);
-    expect(entries.find((e) => e.id === "toggle_sidebar")?.hint).toBe("Ctrl+B");
+    expect(entries.find((e) => e.id === "open_shortcut_guide")?.hint).toBe("Ctrl+/");
   });
 
   it("hides recent-chat and shortcut-guide commands by default", () => {

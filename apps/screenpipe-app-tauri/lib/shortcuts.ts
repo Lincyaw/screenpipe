@@ -65,12 +65,6 @@ export const IN_APP_SHORTCUTS: readonly InAppShortcutDefinition[] = [
     description: msg("Cycle open chat tabs backward", {}),
   },
   {
-    id: "toggle_sidebar",
-    section: "app",
-    label: msg("Toggle sidebar", {}),
-    description: msg("Show or hide the durable chat index", {}),
-  },
-  {
     id: "toggle_right_sidebar",
     section: "app",
     label: msg("Toggle right sidebar", {}),
